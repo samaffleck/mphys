@@ -3,14 +3,9 @@
  *
  * Layout:
  *   left  (~18%)  Model Builder tree
- *   right (~82%)  Configuration / Results panel
- *
- * Physics modules (1D):
- *   Convection-Diffusion-Reaction  (transient, IDA)
- *   Steady Diffusion               (KINSOL)
+ *   centre (~30%) Configuration panel
+ *   right  (~52%) Geometry View (always visible, CAD canvas)
  */
-
-// gui_pch.hpp (precompiled): imgui, imgui_internal, imgui_impl_*, implot, STL
 
 #ifdef __APPLE__
 #define GL_SILENCE_DEPRECATION
@@ -31,111 +26,386 @@
 #include "mphys/transient_solver.hpp"
 
 // ============================================================
+// Expression evaluator — supports +,-,*,/,^,(,), unary minus,
+// constants pi/e, and common math functions.
+// ============================================================
+
+namespace expr {
+  struct Parser {
+    const char* p;
+    void skip() { while (*p == ' ' || *p == '\t') ++p; }
+
+    double primary() {
+      skip();
+      if (*p == '-') { ++p; return -primary(); }
+      if (*p == '+') { ++p; return  primary(); }
+      if (*p == '(') {
+        ++p;
+        double v = expr_val();
+        skip(); if (*p == ')') ++p;
+        return v;
+      }
+      if (std::isalpha((unsigned char)*p)) {
+        const char* s = p;
+        while (std::isalnum((unsigned char)*p) || *p == '_') ++p;
+        std::string name(s, p);
+        skip();
+        if (*p == '(') {
+          ++p;
+          double a = expr_val();
+          skip(); if (*p == ')') ++p;
+          if (name=="sqrt")            return std::sqrt(a);
+          if (name=="sin")             return std::sin(a);
+          if (name=="cos")             return std::cos(a);
+          if (name=="tan")             return std::tan(a);
+          if (name=="log"||name=="ln") return std::log(a);
+          if (name=="log10")           return std::log10(a);
+          if (name=="exp")             return std::exp(a);
+          if (name=="abs")             return std::abs(a);
+          if (name=="floor")           return std::floor(a);
+          if (name=="ceil")            return std::ceil(a);
+          return std::numeric_limits<double>::quiet_NaN();
+        }
+        if (name=="pi"||name=="PI") return 3.14159265358979323846;
+        if (name=="e" ||name=="E")  return 2.71828182845904523536;
+        return std::numeric_limits<double>::quiet_NaN();
+      }
+      char* end;
+      double v = std::strtod(p, &end);
+      if (end == p) return std::numeric_limits<double>::quiet_NaN();
+      p = end;
+      return v;
+    }
+
+    double power() {
+      double b = primary();
+      skip();
+      if (*p == '^') { ++p; return std::pow(b, power()); }
+      return b;
+    }
+
+    double term() {
+      double v = power();
+      for (;;) {
+        skip();
+        if      (*p == '*') { ++p; v *= power(); }
+        else if (*p == '/') { ++p; double d = power(); v = d != 0.0 ? v/d : std::numeric_limits<double>::quiet_NaN(); }
+        else break;
+      }
+      return v;
+    }
+
+    double expr_val() {
+      double v = term();
+      for (;;) {
+        skip();
+        if      (*p == '+') { ++p; v += term(); }
+        else if (*p == '-') { ++p; v -= term(); }
+        else break;
+      }
+      return v;
+    }
+  };
+
+  inline double eval(const char* s) {
+    if (!s || !*s) return 0.0;
+    Parser pr{s};
+    return pr.expr_val();
+  }
+} // namespace expr
+
+// ============================================================
+// Per-widget expression input state
+// ============================================================
+
+struct ExprState { char buf[128] = ""; bool editing = false; };
+static std::unordered_map<ImGuiID, ExprState> g_expr_states;
+
+// Expression-aware float input. When idle shows formatted number; while focused
+// lets the user type a full expression. On commit, evaluates and updates *v.
+// If the field is cleared to empty, *cleared is set to true (value unchanged).
+static bool ExprInputFloat(const char* id_str, float* v, bool* cleared = nullptr,
+                            const char* fmt = "%.6g") {
+  ImGuiID wid = ImGui::GetID(id_str);
+  ExprState& st = g_expr_states[wid];
+
+  if (!st.editing)
+    snprintf(st.buf, sizeof(st.buf), fmt, (double)*v);
+
+  ImGui::InputText(id_str, st.buf, sizeof(st.buf));
+
+  if (ImGui::IsItemActivated())           st.editing = true;
+
+  bool changed = false;
+  if (ImGui::IsItemDeactivatedAfterEdit()) {
+    st.editing = false;
+    const char* t = st.buf;
+    while (*t == ' ') ++t;
+    if (*t == '\0') {
+      if (cleared) *cleared = true;
+    } else {
+      float result = static_cast<float>(expr::eval(st.buf));
+      if (!std::isnan(result)) {
+        changed = (result != *v);
+        *v = result;
+      }
+    }
+    st.buf[0] = '\0';  // re-sync from *v on next idle frame
+  }
+  return changed;
+}
+
+static bool ExprInputInt(const char* id_str, int* v, bool* cleared = nullptr) {
+  float fv = static_cast<float>(*v);
+  bool  cl  = false;
+  bool  ch  = ExprInputFloat(id_str, &fv, &cl);
+  if (cl) { if (cleared) *cleared = true; return false; }
+  if (ch) { *v = static_cast<int>(std::lround(static_cast<double>(fv))); return true; }
+  return false;
+}
+
+// ============================================================
+// UI helpers — standardised input style
+// (label above, input box + inline unit label)
+// ============================================================
+
+static constexpr float kUnitColWidth = 44.0f;
+
+static bool LabeledFloat(const char* label, const char* id, float* v,
+                          const char* unit = nullptr,
+                          const char* fmt  = "%.6g") {
+  ImGui::TextUnformatted(label);
+  float avail = ImGui::GetContentRegionAvail().x;
+  float w = unit ? avail - kUnitColWidth : -1.0f;
+  ImGui::SetNextItemWidth(w);
+  bool ch = ExprInputFloat(id, v, nullptr, fmt);
+  if (unit) { ImGui::SameLine(0, 6); ImGui::TextDisabled("%s", unit); }
+  return ch;
+}
+
+static bool LabeledInt(const char* label, const char* id, int* v,
+                        const char* unit  = nullptr) {
+  ImGui::TextUnformatted(label);
+  float avail = ImGui::GetContentRegionAvail().x;
+  float w = unit ? avail - kUnitColWidth : -1.0f;
+  ImGui::SetNextItemWidth(w);
+  bool ch = ExprInputInt(id, v, nullptr);
+  if (unit) { ImGui::SameLine(0, 6); ImGui::TextDisabled("%s", unit); }
+  return ch;
+}
+
+// ============================================================
 // Physics model definitions
 // ============================================================
 
-// 1D transient convection-diffusion-reaction:  dc/dt = -u·∂c/∂x + D·∂²c/∂x² - k·c
-// BCs: c(0) = c_inlet (Dirichlet), ∂c/∂x(L) = 0 (Neumann)
+// Transient convection-diffusion-reaction with spatially-varying coefficients.
 class ConvDiffModel : public mphys::Model {
  public:
   ConvDiffModel(const mphys::Mesh1D& mesh, mphys::StateVector& sv,
-                double D, double u, double k, double c_inlet)
-      : Model(mesh, sv), D_(D), u_(u), k_(k) {
+                mphys::Field D_face, mphys::Field u_face,
+                std::vector<double> k_cell,
+                mphys::BoundaryCondition left_bc, mphys::BoundaryCondition right_bc)
+      : Model(mesh, sv),
+        D_face_(std::move(D_face)),
+        u_face_(std::move(u_face)),
+        k_cell_(std::move(k_cell)) {
     c_ = AddField("c", 0.0);
-    SetBcs(c_, {mphys::DirichletBc(c_inlet), mphys::NeumannBc(0.0)});
+    SetBcs(c_, {left_bc, right_bc});
   }
 
   void Residual(double,
                 const std::vector<mphys::Field>& y,
                 const std::vector<mphys::Field>& ydot,
-                const std::vector<double>&,
-                const std::vector<double>&,
-                std::vector<mphys::Field>& rr,
-                std::vector<double>&) override {
+                const std::vector<double>&, const std::vector<double>&,
+                std::vector<mphys::Field>& rr, std::vector<double>&) override {
     rr[c_] = mphys::fvm::Ddt(ydot[c_])
-           + mphys::fvm::Convection(y[c_], u_, mesh_, bcs_[c_])
-           - mphys::fvm::Laplacian(y[c_], D_, mesh_, bcs_[c_])
-           + y[c_] * k_;
+           + mphys::fvm::Convection(y[c_], u_face_, mesh_, bcs_[c_])
+           - mphys::fvm::Laplacian(y[c_], D_face_, mesh_, bcs_[c_]);
+    for (int i = 0; i < mesh_.n_cells; ++i)
+      rr[c_][i] += y[c_][i] * k_cell_[i];
   }
 
  private:
   int c_ = 0;
-  double D_, u_, k_;
+  mphys::Field D_face_, u_face_;
+  std::vector<double> k_cell_;
 };
 
-// 1D steady diffusion:  -D·∂²c/∂x² = 0
-// BCs: c(0) = c_left, c(L) = c_right (both Dirichlet)
+// Steady diffusion with spatially-varying face diffusivity.
 class SteadyDiffModel : public mphys::Model {
  public:
   SteadyDiffModel(const mphys::Mesh1D& mesh, mphys::StateVector& sv,
-                  double D, double c_left, double c_right)
-      : Model(mesh, sv), D_(D) {
-    c_ = AddField("c", 0.5 * (c_left + c_right));
-    SetBcs(c_, {mphys::DirichletBc(c_left), mphys::DirichletBc(c_right)});
+                  mphys::Field D_face,
+                  mphys::BoundaryCondition left_bc, mphys::BoundaryCondition right_bc)
+      : Model(mesh, sv), D_face_(std::move(D_face)) {
+    double init = 0.5 * (left_bc.value + right_bc.value);
+    c_ = AddField("c", init);
+    SetBcs(c_, {left_bc, right_bc});
   }
 
   void Residual(double,
                 const std::vector<mphys::Field>& y,
                 const std::vector<mphys::Field>&,
-                const std::vector<double>&,
-                const std::vector<double>&,
-                std::vector<mphys::Field>& rr,
-                std::vector<double>&) override {
-    rr[c_] = -mphys::fvm::Laplacian(y[c_], D_, mesh_, bcs_[c_]);
+                const std::vector<double>&, const std::vector<double>&,
+                std::vector<mphys::Field>& rr, std::vector<double>&) override {
+    rr[c_] = -mphys::fvm::Laplacian(y[c_], D_face_, mesh_, bcs_[c_]);
   }
 
  private:
   int c_ = 0;
-  double D_;
+  mphys::Field D_face_;
 };
 
 // ============================================================
-// Application state
+// Geometry and application state
 // ============================================================
+
+struct GeoNode   { float x = 0.0f; };
+
+struct GeoDomain {
+  int   n_cells = 20;
+  float D = 1.0f;   // diffusivity  [user length² / s]
+  float u = 0.0f;   // velocity     [user length / s]   (conv-diff only)
+  float k = 0.0f;   // reaction rate [1/s]              (conv-diff only)
+};
+
+struct NodeBc {
+  int   type  = 0;    // 0 = Dirichlet, 1 = Neumann
+  float value = 0.0f;
+};
+
+struct Geometry1D {
+  std::vector<GeoNode>   nodes;
+  std::vector<GeoDomain> domains;
+  bool built          = false;
+  int  selected_node   = -1;
+  int  selected_domain = -1;
+};
 
 enum class NavNode { Geometry, Physics, Mesh, Study, Results };
 enum class PhysicsModule { ConvectionDiffusion, SteadyDiffusion };
 
 struct AppState {
-  NavNode       nav    = NavNode::Geometry;
+  NavNode       nav     = NavNode::Geometry;
   PhysicsModule physics = PhysicsModule::ConvectionDiffusion;
 
-  // Mesh
-  int   n_cells = 100;
-  float x_start = 0.0f;
-  float x_end   = 1.0f;
+  mphys::CoordSystem coord_system = mphys::CoordSystem::kCartesian;
 
-  // Convection-diffusion parameters
-  float D_cd    = 1e-4f;
-  float u_cd    = 0.01f;
-  float k_cd    = 0.1f;
-  float c_inlet = 1.0f;
+  Geometry1D geo = {
+    {{0.0f}, {1.0f}},
+    {{20, 1.0f, 0.0f, 0.0f}},
+    false, -1, -1
+  };
 
-  // Steady diffusion parameters
-  float D_sd    = 1.0f;
-  float c_left  = 0.0f;
-  float c_right = 1.0f;
+  int geo_input_mode = 0;                        // 0=coordinates, 1=lengths
+  std::vector<float> geo_lengths = {1.0f};
+  int geo_unit = 0;                              // 0=m  1=cm  2=mm  3=µm
 
-  // Solver / time settings
-  float t_end      = 50.0f;
-  float dt_initial = 1e-3f;
-  float dt_max     = 1.0f;
-  float rel_tol    = 1e-6f;
-  float abs_tol    = 1e-8f;
+  NodeBc left_bc  = {0, 1.0f};
+  NodeBc right_bc = {1, 0.0f};
 
-  // Results
+  float t_end        = 50.0f;
+  float dt_initial   = 1e-3f;
+  float dt_max       = 1.0f;
+  float dt_snapshot  = 1.0f;   // interval at which snapshots are recorded
+  float rel_tol      = 1e-6f;
+  float abs_tol      = 1e-8f;
+
   mphys::SimResult     result;
   std::vector<double>  cell_centres;
-  int                  snapshot_idx = 0;
+  float                plot_time    = 0.0f;
   bool                 has_results  = false;
   std::string          status_msg;
 
-  // UI
   bool dark_theme = true;
 };
 
 // ============================================================
-// Simulation runner (synchronous, called from GUI)
+// Face-field computation helpers
+// ============================================================
+
+// Returns cell-domain index for every cell in the composite mesh.
+static std::vector<int> CellDomainMap(const Geometry1D& geo) {
+  std::vector<int> m;
+  m.reserve(0);
+  for (int d = 0; d < (int)geo.domains.size(); ++d)
+    for (int i = 0; i < geo.domains[d].n_cells; ++i)
+      m.push_back(d);
+  return m;
+}
+
+// Harmonic-mean face diffusivity accounting for heterogeneous dx.
+// D_face[i] for interior face i uses cells i-1 (left) and i (right).
+static mphys::Field ComputeFaceD(const Geometry1D& geo, const mphys::Mesh1D& mesh) {
+  auto dom = CellDomainMap(geo);
+  int  n   = mesh.n_cells;
+  mphys::Field D_face("D_face", n + 1);
+  D_face[0] = geo.domains[dom[0]].D;
+  D_face[n] = geo.domains[dom[n - 1]].D;
+  for (int i = 1; i < n; ++i) {
+    double D_L  = geo.domains[dom[i - 1]].D;
+    double D_R  = geo.domains[dom[i]].D;
+    double dx_L = mesh.dx[i - 1];
+    double dx_R = mesh.dx[i];
+    // Resistance-weighted harmonic mean: D = (dxL+dxR) / (dxL/DL + dxR/DR)
+    D_face[i] = (dx_L + dx_R) / (dx_L / D_L + dx_R / D_R);
+  }
+  return D_face;
+}
+
+// Distance-weighted arithmetic-mean face velocity.
+static mphys::Field ComputeFaceU(const Geometry1D& geo, const mphys::Mesh1D& mesh) {
+  auto dom = CellDomainMap(geo);
+  int  n   = mesh.n_cells;
+  mphys::Field u_face("u_face", n + 1);
+  u_face[0] = geo.domains[dom[0]].u;
+  u_face[n] = geo.domains[dom[n - 1]].u;
+  for (int i = 1; i < n; ++i) {
+    double u_L  = geo.domains[dom[i - 1]].u;
+    double u_R  = geo.domains[dom[i]].u;
+    double dx_L = mesh.dx[i - 1];
+    double dx_R = mesh.dx[i];
+    u_face[i] = (u_R * dx_L + u_L * dx_R) / (dx_L + dx_R);
+  }
+  return u_face;
+}
+
+// Cell-centred reaction rate.
+static std::vector<double> ComputeCellK(const Geometry1D& geo) {
+  std::vector<double> k;
+  for (const auto& d : geo.domains)
+    for (int i = 0; i < d.n_cells; ++i)
+      k.push_back(d.k);
+  return k;
+}
+
+// ============================================================
+// Composite mesh builder
+// ============================================================
+
+static mphys::Mesh1D BuildCompositeMesh(const Geometry1D& geo, mphys::CoordSystem cs) {
+  mphys::Mesh1D mesh;
+  for (int d = 0; d < (int)geo.domains.size(); ++d) {
+    double x0 = geo.nodes[d].x;
+    double x1 = geo.nodes[d + 1].x;
+    int    nc  = geo.domains[d].n_cells;
+    auto   seg = mphys::MakeUniformMesh1D(x0, x1, nc, cs);
+    for (int i = (d == 0 ? 0 : 1); i <= nc; ++i)
+      mesh.face_positions.push_back(seg.face_positions[i]);
+    for (auto v : seg.cell_centres) mesh.cell_centres.push_back(v);
+    for (auto v : seg.dx)           mesh.dx.push_back(v);
+  }
+  mesh.n_cells = (int)mesh.cell_centres.size();
+  mesh.df.resize(mesh.n_cells + 1);
+  mesh.df[0] = 2.0 * (mesh.cell_centres[0] - mesh.face_positions[0]);
+  for (int i = 1; i < mesh.n_cells; ++i)
+    mesh.df[i] = mesh.cell_centres[i] - mesh.cell_centres[i - 1];
+  mesh.df[mesh.n_cells] = 2.0 * (mesh.face_positions.back() - mesh.cell_centres.back());
+  return mesh;
+}
+
+// ============================================================
+// Simulation runner
 // ============================================================
 
 static void RunSimulation(AppState& s) {
@@ -145,15 +415,24 @@ static void RunSimulation(AppState& s) {
   s.status_msg = "Running...";
 
   try {
-    if (s.x_end <= s.x_start)
-      throw std::runtime_error("x_end must be greater than x_start");
+    if (!s.geo.built || s.geo.domains.empty())
+      throw std::runtime_error("Build the geometry first (Geometry -> Build)");
+    for (int d = 0; d < (int)s.geo.domains.size(); ++d)
+      if (s.geo.nodes[d + 1].x <= s.geo.nodes[d].x)
+        throw std::runtime_error("Node positions must be strictly increasing");
 
-    auto mesh = mphys::MakeUniformMesh1D(
-        static_cast<double>(s.x_start),
-        static_cast<double>(s.x_end),
-        s.n_cells);
-
+    auto mesh  = BuildCompositeMesh(s.geo, s.coord_system);
     s.cell_centres = mesh.cell_centres;
+
+    auto D_face = ComputeFaceD(s.geo, mesh);
+    auto u_face = ComputeFaceU(s.geo, mesh);
+    auto k_cell = ComputeCellK(s.geo);
+
+    auto make_bc = [](const NodeBc& nb) -> mphys::BoundaryCondition {
+      return nb.type == 0 ? mphys::DirichletBc(nb.value) : mphys::NeumannBc(nb.value);
+    };
+    auto lbc = make_bc(s.left_bc);
+    auto rbc = make_bc(s.right_bc);
 
     mphys::SolverOptions opts;
     opts.tolerance.relative = static_cast<double>(s.rel_tol);
@@ -164,32 +443,29 @@ static void RunSimulation(AppState& s) {
     mphys::SunContext  sunctx;
     mphys::StateVector sv(mesh.n_cells);
 
+    double dt_snap = std::max(static_cast<double>(s.dt_snapshot),
+                               static_cast<double>(s.dt_max));
     if (s.physics == PhysicsModule::ConvectionDiffusion) {
-      ConvDiffModel model(mesh, sv,
-          static_cast<double>(s.D_cd),
-          static_cast<double>(s.u_cd),
-          static_cast<double>(s.k_cd),
-          static_cast<double>(s.c_inlet));
-
+      ConvDiffModel model(mesh, sv, D_face, u_face, k_cell, lbc, rbc);
       mphys::TransientSolver solver(model, opts, sunctx);
+      double next_snap = 0.0;
       solver.Solve(0.0, static_cast<double>(s.t_end),
           [&](double t, const std::vector<mphys::Field>& f,
               const std::vector<double>& a) {
-            s.result.Record(t, f, a);
+            if (t >= next_snap - 1e-12) {
+              s.result.Record(t, f, a);
+              next_snap += dt_snap;
+            }
           });
     } else {
-      SteadyDiffModel model(mesh, sv,
-          static_cast<double>(s.D_sd),
-          static_cast<double>(s.c_left),
-          static_cast<double>(s.c_right));
-
+      SteadyDiffModel model(mesh, sv, D_face, lbc, rbc);
       mphys::SteadySolver solver(model, opts, sunctx);
       solver.Solve();
       s.result.Record(0.0, model.fields(), model.algebraics());
     }
 
-    s.snapshot_idx = static_cast<int>(s.result.snapshots.size()) - 1;
-    s.has_results  = true;
+    s.plot_time   = static_cast<float>(s.result.snapshots.back().t);
+    s.has_results = true;
     s.nav          = NavNode::Results;
     s.status_msg   = "Done — " + std::to_string(s.result.snapshots.size()) + " snapshots";
 
@@ -199,99 +475,517 @@ static void RunSimulation(AppState& s) {
 }
 
 // ============================================================
+// Geometry helpers
+// ============================================================
+
+static void ApplyLengthsToNodes(AppState& s) {
+  s.geo.nodes.clear();
+  s.geo.nodes.push_back({0.0f});
+  float x = 0.0f;
+  for (float L : s.geo_lengths) { x += L; s.geo.nodes.push_back({x}); }
+  while ((int)s.geo.domains.size() < (int)s.geo_lengths.size())
+    s.geo.domains.push_back({});
+  s.geo.domains.resize(s.geo_lengths.size());
+}
+
+static void ApplyNodesToLengths(AppState& s) {
+  s.geo_lengths.clear();
+  for (int d = 0; d < (int)s.geo.domains.size(); ++d)
+    s.geo_lengths.push_back(s.geo.nodes[d + 1].x - s.geo.nodes[d].x);
+}
+
+// ============================================================
 // GUI panels
 // ============================================================
 
-static void ShowGeometryPanel() {
+static void ShowGeometryPanel(AppState& s) {
+  static constexpr const char* kUnits[] = {"m", "cm", "mm", "\xc2\xb5m"};
+  Geometry1D& geo = s.geo;
+
   ImGui::SeparatorText("Coordinate System");
   ImGui::Spacing();
+  int cs_sel = (s.coord_system == mphys::CoordSystem::kSpherical) ? 1 : 0;
+  if (ImGui::RadioButton("Cartesian", &cs_sel, 0))
+    s.coord_system = mphys::CoordSystem::kCartesian;
+  ImGui::SameLine();
+  if (ImGui::RadioButton("Spherical", &cs_sel, 1))
+    s.coord_system = mphys::CoordSystem::kSpherical;
+  ImGui::SameLine(0, 20.0f);
+  ImGui::TextUnformatted("Unit:");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(60.0f);
+  ImGui::Combo("##unit", &s.geo_unit, kUnits, 4);
 
-  static const char* kSystems[] = {"1D", "2D", "2D Axisymmetric", "3D"};
-  for (int i = 0; i < 4; ++i) {
-    int dummy = 0;
-    if (i != 0) ImGui::BeginDisabled();
-    ImGui::RadioButton(kSystems[i], &dummy, 0);
-    if (i != 0) ImGui::EndDisabled();
-    if (i < 3) ImGui::SameLine();
-  }
   ImGui::Spacing();
-  ImGui::TextDisabled("2D, 2D Axisymmetric, and 3D — coming soon.");
+  ImGui::SeparatorText("Domain Definition");
+  ImGui::Spacing();
+
+  int old_mode = s.geo_input_mode;
+  ImGui::TextUnformatted("Specify by:");
+  ImGui::SameLine();
+  ImGui::RadioButton("Coordinates##m", &s.geo_input_mode, 0);
+  ImGui::SameLine();
+  ImGui::RadioButton("Lengths##m",     &s.geo_input_mode, 1);
+
+  if (s.geo_input_mode != old_mode) {
+    if (s.geo_input_mode == 1) ApplyNodesToLengths(s);
+    else                        ApplyLengthsToNodes(s);
+    geo.built = false;
+  }
+
+  ImGui::Spacing();
+
+  // Lock origin to 0
+  if (!geo.nodes.empty()) geo.nodes[0].x = 0.0f;
+
+  static constexpr ImGuiTableFlags kTblFlags =
+      ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
+      ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoHostExtendX;
+
+  if (s.geo_input_mode == 0) {
+    char hint[64]; snprintf(hint, sizeof(hint),
+        "x positions  [%s]  (clear a row to remove it)", kUnits[s.geo_unit]);
+    ImGui::TextDisabled("%s", hint);
+    ImGui::Spacing();
+
+    if (ImGui::BeginTable("coord_tbl", 1, kTblFlags)) {
+      int delete_idx = -1;
+
+      for (int i = 0; i < (int)geo.nodes.size(); ++i) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::SetNextItemWidth(-1.0f);
+        char id[32]; snprintf(id, sizeof(id), "##cx%d", i);
+
+        if (i == 0) {
+          ImGui::BeginDisabled();
+          float zero = 0.0f;
+          ImGui::InputFloat(id, &zero, 0, 0, "%.6g");
+          ImGui::EndDisabled();
+        } else {
+          bool cleared = false;
+          if (ExprInputFloat(id, &geo.nodes[i].x, &cleared)) geo.built = false;
+          if (cleared && (int)geo.nodes.size() > 2) delete_idx = i;
+        }
+      }
+
+      if (delete_idx >= 0) {
+        int di = delete_idx - 1;
+        geo.nodes.erase(geo.nodes.begin() + delete_idx);
+        if (di < (int)geo.domains.size())
+          geo.domains.erase(geo.domains.begin() + di);
+        geo.built = false;
+        geo.selected_node = geo.selected_domain = -1;
+        ApplyNodesToLengths(s);
+      }
+
+      {
+        static char coord_draft_buf[32] = "";
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+        ImGui::InputText("##cdraft", coord_draft_buf, sizeof(coord_draft_buf),
+                         ImGuiInputTextFlags_CharsDecimal);
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemDeactivatedAfterEdit() && coord_draft_buf[0] != '\0') {
+          float val = static_cast<float>(expr::eval(coord_draft_buf));
+          coord_draft_buf[0] = '\0';
+          if (!std::isnan(val)) {
+            geo.nodes.push_back({val});
+            geo.domains.push_back({});
+            geo.built = false;
+            ApplyNodesToLengths(s);
+          }
+        }
+      }
+
+      ImGui::EndTable();
+    }
+
+  } else {
+    char hint[64]; snprintf(hint, sizeof(hint),
+        "Domain lengths  [%s]  (clear a row to remove it)", kUnits[s.geo_unit]);
+    ImGui::TextDisabled("%s", hint);
+    ImGui::Spacing();
+
+    if (ImGui::BeginTable("len_tbl", 1, kTblFlags)) {
+      int delete_d = -1;
+
+      for (int d = 0; d < (int)s.geo_lengths.size(); ++d) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::SetNextItemWidth(-1.0f);
+        char id[32]; snprintf(id, sizeof(id), "##ln%d", d);
+        bool cleared = false;
+        if (ExprInputFloat(id, &s.geo_lengths[d], &cleared)) {
+          if (s.geo_lengths[d] <= 0.0f) s.geo_lengths[d] = 0.001f;
+          geo.built = false;
+        }
+        if (cleared && (int)s.geo_lengths.size() > 1) delete_d = d;
+      }
+
+      if (delete_d >= 0) {
+        s.geo_lengths.erase(s.geo_lengths.begin() + delete_d);
+        if (delete_d < (int)geo.domains.size())
+          geo.domains.erase(geo.domains.begin() + delete_d);
+        geo.built = false;
+        ApplyLengthsToNodes(s);
+      }
+
+      {
+        static char len_draft_buf[32] = "";
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+        ImGui::InputText("##ldraft", len_draft_buf, sizeof(len_draft_buf),
+                         ImGuiInputTextFlags_CharsDecimal);
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemDeactivatedAfterEdit() && len_draft_buf[0] != '\0') {
+          float val = static_cast<float>(expr::eval(len_draft_buf));
+          len_draft_buf[0] = '\0';
+          if (!std::isnan(val) && val > 0.0f) {
+            s.geo_lengths.push_back(val);
+            geo.domains.push_back({});
+            geo.built = false;
+          }
+        }
+      }
+
+      ImGui::EndTable();
+    }
+  }
+
+  ImGui::Spacing();
+
+  bool sorted = true;
+  if (s.geo_input_mode == 0) {
+    for (int i = 1; i < (int)geo.nodes.size(); ++i)
+      if (geo.nodes[i].x <= geo.nodes[i - 1].x) { sorted = false; break; }
+  } else {
+    for (float L : s.geo_lengths)
+      if (L <= 0.0f) { sorted = false; break; }
+  }
+  bool can_build = ((int)geo.nodes.size() >= 2 || (int)s.geo_lengths.size() >= 1) && sorted;
+
+  if (!can_build) ImGui::BeginDisabled();
+  if (ImGui::Button("Build", ImVec2(-1.0f, 28))) {
+    if (s.geo_input_mode == 1) ApplyLengthsToNodes(s);
+    geo.built = true;
+    geo.selected_node = geo.selected_domain = -1;
+    s.has_results = false;
+    s.status_msg.clear();
+  }
+  if (!can_build) ImGui::EndDisabled();
+
+  if (!sorted) {
+    ImGui::Spacing();
+    ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.3f, 1.0f),
+        s.geo_input_mode == 0 ? "Coordinates must be strictly increasing"
+                               : "All lengths must be positive");
+  }
 }
 
+// ============================================================
+// Geometry View — CAD canvas
+// ============================================================
+
+static void ShowGeometryView(AppState& s) {
+  static constexpr const char* kUnits[] = {"m", "cm", "mm", "\xc2\xb5m"};
+  Geometry1D& geo = s.geo;
+
+  ImDrawList* dl   = ImGui::GetWindowDrawList();
+  ImVec2      orig = ImGui::GetWindowPos();
+  float       cw   = ImGui::GetWindowWidth();
+  float       ch   = ImGui::GetWindowHeight();
+
+  if (!geo.built || (int)geo.nodes.size() < 2) {
+    const char* msg = "Configure geometry and press  Build";
+    ImVec2 ts = ImGui::CalcTextSize(msg);
+    dl->AddText(ImVec2(orig.x + (cw - ts.x) * 0.5f, orig.y + (ch - ts.y) * 0.5f),
+                IM_COL32(100, 100, 120, 200), msg);
+    return;
+  }
+
+  const float pad    = 60.0f;
+  const float usable = cw - 2.0f * pad;
+  const float line_y = orig.y + ch * 0.50f;
+
+  float x_min = geo.nodes.front().x;
+  float x_max = geo.nodes.back().x;
+  float span  = x_max - x_min;
+  if (span <= 0.0f) span = 1.0f;
+
+  auto node_px = [&](float x) -> float {
+    return orig.x + pad + (x - x_min) / span * usable;
+  };
+
+  ImVec2 mouse     = ImGui::GetMousePos();
+  int hovered_node   = -1;
+  int hovered_domain = -1;
+  bool canvas_hov  = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
+
+  if (canvas_hov) {
+    for (int i = 0; i < (int)geo.nodes.size(); ++i) {
+      float px = node_px(geo.nodes[i].x);
+      float dx = mouse.x - px, dy = mouse.y - line_y;
+      if (dx * dx + dy * dy < 9.0f * 9.0f) { hovered_node = i; break; }
+    }
+    if (hovered_node < 0) {
+      for (int d = 0; d < (int)geo.domains.size(); ++d) {
+        float px_l = node_px(geo.nodes[d].x);
+        float px_r = node_px(geo.nodes[d + 1].x);
+        if (mouse.x > px_l && mouse.x < px_r && fabsf(mouse.y - line_y) < 7.0f)
+          hovered_domain = d;
+      }
+    }
+  }
+
+  if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    if (hovered_node >= 0) {
+      geo.selected_node = hovered_node; geo.selected_domain = -1;
+    } else if (hovered_domain >= 0) {
+      geo.selected_domain = hovered_domain; geo.selected_node = -1;
+    } else if (canvas_hov) {
+      geo.selected_node = geo.selected_domain = -1;
+    }
+  }
+
+  if (hovered_node >= 0 || hovered_domain >= 0)
+    ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+
+  // Faint axis
+  dl->AddLine(ImVec2(orig.x + pad * 0.5f, line_y),
+              ImVec2(orig.x + cw - pad * 0.5f, line_y),
+              IM_COL32(80, 80, 100, 60), 1.0f);
+
+  // Domain segments
+  for (int d = 0; d < (int)geo.domains.size(); ++d) {
+    float px_l = node_px(geo.nodes[d].x);
+    float px_r = node_px(geo.nodes[d + 1].x);
+    bool  sel  = (d == geo.selected_domain);
+    bool  hov  = (d == hovered_domain);
+    ImU32 col  = sel ? IM_COL32(255, 190, 50, 255) :
+                 hov ? IM_COL32(120, 185, 255, 255) :
+                       IM_COL32(75,  145, 245, 255);
+    dl->AddLine(ImVec2(px_l, line_y), ImVec2(px_r, line_y), col, 3.5f);
+
+    char lbl[8]; snprintf(lbl, sizeof(lbl), "%d", d + 1);
+    float mid_x = (px_l + px_r) * 0.5f;
+    ImVec2 ts = ImGui::CalcTextSize(lbl);
+    dl->AddText(ImVec2(mid_x - ts.x * 0.5f, line_y - ts.y - 10.0f),
+                sel ? IM_COL32(255, 210, 100, 200) : IM_COL32(120, 160, 220, 160), lbl);
+  }
+
+  // Nodes
+  for (int i = 0; i < (int)geo.nodes.size(); ++i) {
+    float px       = node_px(geo.nodes[i].x);
+    bool  sel      = (i == geo.selected_node);
+    bool  hov      = (i == hovered_node);
+    bool  terminal = (i == 0 || i == (int)geo.nodes.size() - 1);
+    float r        = terminal ? 6.5f : 4.5f;
+
+    ImU32 fill = sel ? IM_COL32(255, 200, 60, 255) :
+                 hov ? IM_COL32(220, 235, 255, 255) :
+                       IM_COL32(200, 220, 255, terminal ? 255 : 180);
+    dl->AddCircleFilled(ImVec2(px, line_y), r, fill);
+    if (sel)
+      dl->AddCircle(ImVec2(px, line_y), r + 3.5f, IM_COL32(255, 200, 60, 180), 0, 1.5f);
+    else if (hov)
+      dl->AddCircle(ImVec2(px, line_y), r + 2.5f, IM_COL32(200, 220, 255, 120), 0, 1.0f);
+
+    dl->AddLine(ImVec2(px, line_y + r + 1.0f), ImVec2(px, line_y + r + 5.0f),
+                IM_COL32(150, 170, 200, 140), 1.0f);
+
+    if (terminal || sel || hov) {
+      char xlbl[48]; snprintf(xlbl, sizeof(xlbl), "%.4g %s",
+                               (double)geo.nodes[i].x, kUnits[s.geo_unit]);
+      ImVec2 xs = ImGui::CalcTextSize(xlbl);
+      ImU32  tc = sel ? IM_COL32(255, 210, 100, 220) : IM_COL32(170, 185, 210, 200);
+      dl->AddText(ImVec2(px - xs.x * 0.5f, line_y + r + 7.0f), tc, xlbl);
+    }
+  }
+
+  // Selection overlay
+  if (geo.selected_node >= 0 || geo.selected_domain >= 0) {
+    const char* u = kUnits[s.geo_unit];
+    char info[128] = {};
+    if (geo.selected_node >= 0) {
+      int  i    = geo.selected_node;
+      bool term = (i == 0 || i == (int)geo.nodes.size() - 1);
+      snprintf(info, sizeof(info), "Node %d  x = %.6g %s%s",
+               i, (double)geo.nodes[i].x, u, term ? "" : "  (internal)");
+    } else {
+      int d = geo.selected_domain;
+      double L = geo.nodes[d + 1].x - geo.nodes[d].x;
+      snprintf(info, sizeof(info), "Domain %d  L = %.6g %s  n = %d",
+               d + 1, L, u, geo.domains[d].n_cells);
+    }
+    ImVec2 ts = ImGui::CalcTextSize(info);
+    float  ix = orig.x + 10.0f, iy = orig.y + ch - ts.y - 10.0f;
+    dl->AddRectFilled(ImVec2(ix - 4, iy - 3), ImVec2(ix + ts.x + 4, iy + ts.y + 3),
+                      IM_COL32(20, 20, 30, 180), 3.0f);
+    dl->AddText(ImVec2(ix, iy), IM_COL32(200, 210, 230, 230), info);
+  }
+}
+
+// ============================================================
+// Configuration panels
+// ============================================================
+
 static void ShowPhysicsPanel(AppState& s) {
+  static constexpr const char* kMods[] = {"Convection-Diffusion-Reaction", "Steady Diffusion"};
+  bool transient = (s.physics == PhysicsModule::ConvectionDiffusion);
+
   ImGui::SeparatorText("Physics Module");
   ImGui::Spacing();
-
-  static const char* kModules[] = {"Convection-Diffusion-Reaction", "Steady Diffusion"};
   int sel = static_cast<int>(s.physics);
-  if (ImGui::Combo("Module##phys", &sel, kModules, 2))
+  ImGui::SetNextItemWidth(-1.0f);
+  if (ImGui::Combo("##phys", &sel, kMods, 2))
     s.physics = static_cast<PhysicsModule>(sel);
 
   ImGui::Spacing();
 
-  if (s.physics == PhysicsModule::ConvectionDiffusion) {
-    ImGui::SeparatorText("Parameters");
-    ImGui::InputFloat("Diffusivity D  [m²/s]",  &s.D_cd,    0, 0, "%.2e");
-    ImGui::InputFloat("Velocity u  [m/s]",       &s.u_cd,    0, 0, "%.4f");
-    ImGui::InputFloat("Reaction rate k  [1/s]",  &s.k_cd,    0, 0, "%.4f");
-    ImGui::InputFloat("Inlet concentration c₀",  &s.c_inlet, 0, 0, "%.4f");
-    ImGui::Spacing();
-    ImGui::TextDisabled("PDE:  dc/dt = -u dc/dx + D d²c/dx² - k c");
-    ImGui::TextDisabled("BCs:  c(0) = c_inlet  (Dirichlet)");
-    ImGui::TextDisabled("      dc/dx(L) = 0    (Neumann)");
-    ImGui::TextDisabled("IC:   c(x,0) = 0");
+  if (!s.geo.built || s.geo.domains.empty()) {
+    ImGui::TextDisabled("Build the geometry to configure physics parameters.");
   } else {
-    ImGui::SeparatorText("Parameters");
-    ImGui::InputFloat("Diffusivity D  [m²/s]",  &s.D_sd,    0, 0, "%.4f");
-    ImGui::InputFloat("Left BC value",           &s.c_left,  0, 0, "%.4f");
-    ImGui::InputFloat("Right BC value",          &s.c_right, 0, 0, "%.4f");
+    for (int d = 0; d < (int)s.geo.domains.size(); ++d) {
+      GeoDomain& dom = s.geo.domains[d];
+      char sec[32]; snprintf(sec, sizeof(sec), "Domain %d", d + 1);
+      ImGui::SeparatorText(sec);
+      ImGui::Spacing();
+
+      char id_D[16], id_u[16], id_k[16];
+      snprintf(id_D, sizeof(id_D), "##D%d", d);
+      snprintf(id_u, sizeof(id_u), "##u%d", d);
+      snprintf(id_k, sizeof(id_k), "##k%d", d);
+
+      LabeledFloat("Diffusivity", id_D, &dom.D, "m\xc2\xb2/s");
+      if (transient) {
+        ImGui::Spacing();
+        LabeledFloat("Velocity",     id_u, &dom.u, "m/s");
+        ImGui::Spacing();
+        LabeledFloat("Reaction rate", id_k, &dom.k, "1/s");
+      }
+      ImGui::Spacing();
+    }
+  }
+
+  ImGui::Spacing();
+  ImGui::SeparatorText("Boundary Conditions");
+  ImGui::Spacing();
+
+  if (!s.geo.built || s.geo.nodes.size() < 2) {
+    ImGui::TextDisabled("Build the geometry to configure boundary conditions.");
+    return;
+  }
+
+  auto ShowBc = [](const char* label, float x_pos, NodeBc& bc) {
+    char buf[64]; snprintf(buf, sizeof(buf), "%s  (x = %.4g)", label, (double)x_pos);
+    ImGui::TextUnformatted(buf);
     ImGui::Spacing();
-    ImGui::TextDisabled("PDE:  -D d²c/dx² = 0  (steady)");
-    ImGui::TextDisabled("BCs:  c(0) = c_left, c(L) = c_right  (Dirichlet)");
+    char rid[64], nid[64], vid[64];
+    snprintf(rid, sizeof(rid), "Dirichlet##t%s", label);
+    snprintf(nid, sizeof(nid), "Neumann##t%s",   label);
+    ImGui::RadioButton(rid, &bc.type, 0); ImGui::SameLine();
+    ImGui::RadioButton(nid, &bc.type, 1);
+    snprintf(vid, sizeof(vid), "##v%s", label);
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputFloat(vid, &bc.value, 0, 0, "%.4g");
+  };
+
+  ShowBc("Boundary 1", s.geo.nodes.front().x, s.left_bc);
+  ImGui::Spacing();
+  ImGui::Separator();
+  ImGui::Spacing();
+  ShowBc("Boundary 2", s.geo.nodes.back().x,  s.right_bc);
+
+  if ((int)s.geo.nodes.size() > 2) {
+    ImGui::Spacing();
+    ImGui::TextDisabled("%d internal node(s) — continuity applied automatically.",
+                        (int)s.geo.nodes.size() - 2);
   }
 }
 
 static void ShowMeshPanel(AppState& s) {
-  ImGui::SeparatorText("Domain");
-  ImGui::InputFloat("x start  [m]", &s.x_start, 0, 0, "%.3f");
-  ImGui::InputFloat("x end    [m]", &s.x_end,   0, 0, "%.3f");
-  if (s.x_end <= s.x_start) s.x_end = s.x_start + 0.01f;
-
-  ImGui::Spacing();
   ImGui::SeparatorText("Discretisation");
-  ImGui::SliderInt("Number of cells", &s.n_cells, 10, 500);
-
-  float dx = (s.x_end - s.x_start) / static_cast<float>(s.n_cells);
   ImGui::Spacing();
-  ImGui::Text("Cell size: %.5f m", static_cast<double>(dx));
+
+  if (!s.geo.built || s.geo.domains.empty()) {
+    ImGui::TextDisabled("Build the geometry first (Geometry -> Build).");
+    return;
+  }
+
+  if ((int)s.geo.domains.size() == 1) {
+    LabeledInt("Number of cells", "##nc0", &s.geo.domains[0].n_cells);
+    if (s.geo.domains[0].n_cells < 1) s.geo.domains[0].n_cells = 1;
+  } else {
+    if (ImGui::BeginTable("mesh_tbl", 3,
+        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+        ImGuiTableFlags_SizingStretchSame)) {
+      ImGui::TableSetupColumn("Domain");
+      ImGui::TableSetupColumn("Length");
+      ImGui::TableSetupColumn("Cells");
+      ImGui::TableHeadersRow();
+      for (int d = 0; d < (int)s.geo.domains.size(); ++d) {
+        double len = s.geo.nodes[d + 1].x - s.geo.nodes[d].x;
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0); ImGui::Text("%d", d + 1);
+        ImGui::TableSetColumnIndex(1); ImGui::Text("%.4g", len);
+        ImGui::TableSetColumnIndex(2);
+        ImGui::SetNextItemWidth(-1.0f);
+        char id[32]; snprintf(id, sizeof(id), "##mc%d", d);
+        ImGui::InputInt(id, &s.geo.domains[d].n_cells, 0, 0);
+        if (s.geo.domains[d].n_cells < 1) s.geo.domains[d].n_cells = 1;
+      }
+      ImGui::EndTable();
+    }
+  }
+
+  ImGui::Spacing();
+  int total = 0;
+  for (const auto& d : s.geo.domains) total += d.n_cells;
+  ImGui::Text("Total cells: %d", total);
 }
 
 static void ShowStudyPanel(AppState& s) {
   bool transient = (s.physics == PhysicsModule::ConvectionDiffusion);
 
   ImGui::SeparatorText("Solver");
-  ImGui::TextUnformatted(transient ? "Transient  (SUNDIALS IDA)" : "Steady-state  (SUNDIALS KINSOL)");
+  ImGui::TextUnformatted(transient ? "Transient  (SUNDIALS IDA)"
+                                   : "Steady-state  (SUNDIALS KINSOL)");
 
   if (transient) {
     ImGui::Spacing();
     ImGui::SeparatorText("Time Settings");
-    ImGui::InputFloat("End time  [s]",     &s.t_end,      0, 0, "%.3f");
-    ImGui::InputFloat("Initial dt  [s]",   &s.dt_initial, 0, 0, "%.2e");
-    ImGui::InputFloat("Max dt  [s]",       &s.dt_max,     0, 0, "%.3f");
+    LabeledFloat("End time",           "##tend",   &s.t_end,        "s");
+    ImGui::Spacing();
+    LabeledFloat("Snapshot interval",  "##dtsnap", &s.dt_snapshot,  "s");
+    if (s.dt_snapshot < s.dt_max) {
+      s.dt_snapshot = s.dt_max;
+      ImGui::SameLine(0, 6);
+      ImGui::TextDisabled("(clamped to max dt)");
+    }
+    ImGui::Spacing();
+    ImGui::SeparatorText("Solver Settings");
+    LabeledFloat("Initial dt",  "##dtinit", &s.dt_initial, "s", "%.2e");
+    ImGui::Spacing();
+    LabeledFloat("Max dt",      "##dtmax",  &s.dt_max,     "s");
+    if (s.dt_max > s.dt_snapshot) s.dt_snapshot = s.dt_max;
   }
 
   ImGui::Spacing();
   ImGui::SeparatorText("Tolerances");
-  ImGui::InputFloat("Relative tolerance", &s.rel_tol, 0, 0, "%.2e");
-  ImGui::InputFloat("Absolute tolerance", &s.abs_tol, 0, 0, "%.2e");
-
+  LabeledFloat("Relative tolerance", "##rtol", &s.rel_tol, nullptr, "%.2e");
+  ImGui::Spacing();
+  LabeledFloat("Absolute tolerance", "##atol", &s.abs_tol, nullptr, "%.2e");
   ImGui::Spacing();
   ImGui::Spacing();
 
   bool can_run = !s.status_msg.starts_with("Running");
   if (!can_run) ImGui::BeginDisabled();
-  if (ImGui::Button("Run", ImVec2(120, 32)))
-    RunSimulation(s);
+  if (ImGui::Button("Run", ImVec2(120, 32))) RunSimulation(s);
   if (!can_run) ImGui::EndDisabled();
 
   if (!s.status_msg.empty()) {
@@ -300,74 +994,119 @@ static void ShowStudyPanel(AppState& s) {
   }
 }
 
+// Linearly interpolate a field at time t between stored snapshots.
+static std::vector<double> InterpolateField(const mphys::SimResult& res,
+                                             int field_idx, double t) {
+  const auto& snaps = res.snapshots;
+  if (snaps.empty()) return {};
+  if (t <= snaps.front().t) return snaps.front().fields[field_idx].values;
+  if (t >= snaps.back().t)  return snaps.back().fields[field_idx].values;
+
+  int lo = 0, hi = static_cast<int>(snaps.size()) - 1;
+  while (hi - lo > 1) {
+    int mid = (lo + hi) / 2;
+    if (snaps[mid].t <= t) lo = mid; else hi = mid;
+  }
+  double t0 = snaps[lo].t, t1 = snaps[hi].t;
+  double alpha = (t1 > t0) ? (t - t0) / (t1 - t0) : 0.0;
+  const auto& f0 = snaps[lo].fields[field_idx].values;
+  const auto& f1 = snaps[hi].fields[field_idx].values;
+  std::vector<double> out(f0.size());
+  for (int i = 0; i < (int)f0.size(); ++i)
+    out[i] = f0[i] * (1.0 - alpha) + f1[i] * alpha;
+  return out;
+}
+
 static void ShowResultsPanel(AppState& s) {
   if (!s.has_results || s.result.snapshots.empty()) {
     ImGui::TextDisabled("No results yet — run a simulation from the Study node.");
     return;
   }
 
-  const auto& snap = s.result.snapshots[s.snapshot_idx];
-  int n_snaps = static_cast<int>(s.result.snapshots.size());
+  const auto& snaps   = s.result.snapshots;
+  int         n_snaps = static_cast<int>(snaps.size());
+  bool        transient = n_snaps > 1;
 
-  // Time slider (transient only)
-  if (n_snaps > 1) {
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 120.0f);
-    ImGui::SliderInt("Snapshot", &s.snapshot_idx, 0, n_snaps - 1);
-    ImGui::SameLine();
-    ImGui::Text("t = %.4f s", snap.t);
-  } else {
-    ImGui::Text("Steady-state result");
-  }
-
-  ImGui::Spacing();
-
-  // Field selector
-  int n_fields = static_cast<int>(snap.fields.size());
+  int n_fields = static_cast<int>(snaps[0].fields.size());
   static int field_idx = 0;
   if (field_idx >= n_fields) field_idx = 0;
 
-  if (n_fields > 1) {
-    std::vector<const char*> names;
-    names.reserve(n_fields);
-    for (const auto& f : snap.fields) names.push_back(f.name.c_str());
-    ImGui::Combo("Field", &field_idx, names.data(), n_fields);
+  if (!transient) {
+    ImGui::TextUnformatted("Steady-state result");
+    ImGui::Spacing();
+  } else {
+    float t_min = static_cast<float>(snaps.front().t);
+    float t_max = static_cast<float>(snaps.back().t);
+
+    // Clamp stored plot_time into valid range after a new run
+    s.plot_time = std::clamp(s.plot_time, t_min, t_max);
+
+    float avail = ImGui::GetContentRegionAvail().x;
+
+    // Continuous slider across the full time range
+    ImGui::SetNextItemWidth(avail - kUnitColWidth);
+    ImGui::SliderFloat("##tslider", &s.plot_time, t_min, t_max, "");
+    ImGui::SameLine(0, 6);
+    ImGui::TextDisabled("s");
+    ImGui::Spacing();
+
+    // Exact time input via expression
+    float w = avail - ImGui::CalcTextSize("t =").x - 6.0f - kUnitColWidth;
+    ImGui::TextUnformatted("t ="); ImGui::SameLine(0, 6);
+    ImGui::SetNextItemWidth(w);
+    ExprInputFloat("##texact", &s.plot_time);
+    s.plot_time = std::clamp(s.plot_time, t_min, t_max);
+    ImGui::SameLine(0, 6); ImGui::TextDisabled("s");
+
+    ImGui::Spacing();
+    ImGui::TextDisabled("%d snapshots  [%.4g s … %.4g s]",
+                        n_snaps, (double)t_min, (double)t_max);
     ImGui::Spacing();
   }
 
-  // Plot
-  const auto& field = snap.fields[field_idx];
+  if (n_fields > 1) {
+    std::vector<const char*> names;
+    for (const auto& f : snaps[0].fields) names.push_back(f.name.c_str());
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::Combo("##field", &field_idx, names.data(), n_fields);
+    ImGui::Spacing();
+  }
+
+  // Compute values to plot — interpolated for transient, direct for steady
+  std::vector<double> plot_vals;
+  if (transient) {
+    plot_vals = InterpolateField(s.result, field_idx, static_cast<double>(s.plot_time));
+  } else {
+    plot_vals = snaps[0].fields[field_idx].values;
+  }
+
+  const std::string& fname = snaps[0].fields[field_idx].name;
   int n_cells = static_cast<int>(s.cell_centres.size());
 
   ImVec2 plot_size = ImGui::GetContentRegionAvail();
   plot_size.y -= 4.0f;
 
   if (ImPlot::BeginPlot("##results", plot_size)) {
-    ImPlot::SetupAxes("x  [m]", field.name.c_str());
-    ImPlot::SetupAxisLimitsConstraints(ImAxis_X1,
-        static_cast<double>(s.x_start),
-        static_cast<double>(s.x_end));
-
-    ImPlot::PlotLine(field.name.c_str(),
-        s.cell_centres.data(),
-        field.values.data(),
-        n_cells);
-
+    ImPlot::SetupAxes("x  [m]", fname.c_str(),
+                      ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+    ImPlot::PlotLine(fname.c_str(),
+        s.cell_centres.data(), plot_vals.data(), n_cells);
     ImPlot::EndPlot();
   }
 }
 
 static void ShowConfigPanel(AppState& s) {
   switch (s.nav) {
-    case NavNode::Geometry: ShowGeometryPanel();   break;
-    case NavNode::Physics:  ShowPhysicsPanel(s);   break;
-    case NavNode::Mesh:     ShowMeshPanel(s);       break;
-    case NavNode::Study:    ShowStudyPanel(s);      break;
-    case NavNode::Results:  ShowResultsPanel(s);    break;
+    case NavNode::Geometry: ShowGeometryPanel(s); break;
+    case NavNode::Physics:  ShowPhysicsPanel(s);  break;
+    case NavNode::Mesh:     ShowMeshPanel(s);      break;
+    case NavNode::Study:    ShowStudyPanel(s);     break;
+    case NavNode::Results:  ShowResultsPanel(s);   break;
   }
 }
 
 // ============================================================
-// Dock layout (set up once on first frame)
+// Dock layout
 // ============================================================
 
 static void SetupDockLayout(ImGuiID dockspace_id) {
@@ -378,19 +1117,22 @@ static void SetupDockLayout(ImGuiID dockspace_id) {
   ImGuiID left, right;
   ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.18f, &left, &right);
 
+  ImGuiID config, canvas;
+  ImGui::DockBuilderSplitNode(right, ImGuiDir_Left, 0.42f, &config, &canvas);
+
   ImGui::DockBuilderDockWindow("Model Builder", left);
-  ImGui::DockBuilderDockWindow("Configuration", right);
+  ImGui::DockBuilderDockWindow("Configuration", config);
+  ImGui::DockBuilderDockWindow("Geometry View", canvas);
   ImGui::DockBuilderFinish(dockspace_id);
 }
 
 // ============================================================
-// Main render function — called each frame
+// Main render function
 // ============================================================
 
 static void RenderFrame(AppState& s) {
   static bool first_frame = true;
 
-  // Full-screen DockSpace
   ImGuiViewport* vp = ImGui::GetMainViewport();
   ImGui::SetNextWindowPos(vp->WorkPos);
   ImGui::SetNextWindowSize(vp->WorkSize);
@@ -408,7 +1150,6 @@ static void RenderFrame(AppState& s) {
   ImGui::Begin("##host", nullptr, host_flags);
   ImGui::PopStyleVar(3);
 
-  // Menu bar
   if (ImGui::BeginMenuBar()) {
     if (ImGui::BeginMenu("File")) {
       if (ImGui::MenuItem("Quit", "Alt+F4"))
@@ -416,18 +1157,15 @@ static void RenderFrame(AppState& s) {
       ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Study")) {
-      if (ImGui::MenuItem("Run", "F5"))
-        RunSimulation(s);
+      if (ImGui::MenuItem("Run", "F5")) RunSimulation(s);
       ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
-      if (ImGui::MenuItem("Dark Theme",  nullptr, s.dark_theme))  {
-        s.dark_theme = true;
-        Themes::SetDarkTheme();
+      if (ImGui::MenuItem("Dark Theme",  nullptr, s.dark_theme)) {
+        s.dark_theme = true;  Themes::SetDarkTheme();
       }
       if (ImGui::MenuItem("Light Theme", nullptr, !s.dark_theme)) {
-        s.dark_theme = false;
-        Themes::SetLightTheme();
+        s.dark_theme = false; Themes::SetLightTheme();
       }
       ImGui::EndMenu();
     }
@@ -440,20 +1178,13 @@ static void RenderFrame(AppState& s) {
       ImGui::EndMenu();
     }
 
-    // Quick-run button in menu bar
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 12.0f);
-    if (ImGui::SmallButton("  Run  "))
-      RunSimulation(s);
-
     if (!s.status_msg.empty()) {
       ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 8.0f);
       ImGui::TextDisabled("%s", s.status_msg.c_str());
     }
-
     ImGui::EndMenuBar();
   }
 
-  // DockSpace
   ImGuiID dockspace_id = ImGui::GetID("MainDockSpace");
   ImGui::DockSpace(dockspace_id, ImVec2(0, 0), ImGuiDockNodeFlags_None);
 
@@ -461,53 +1192,48 @@ static void RenderFrame(AppState& s) {
     first_frame = false;
     SetupDockLayout(dockspace_id);
   }
-
   ImGui::End();
 
-  // ---- Model Builder window ----
-  ImGuiWindowFlags panel_flags = ImGuiWindowFlags_NoTitleBar;
+  // ---- Model Builder ----
   ImGui::Begin("Model Builder", nullptr, 0);
   ImGui::TextColored(ImVec4(0.4f, 0.6f, 1.0f, 1.0f), "Model Builder");
   ImGui::Separator();
   ImGui::Spacing();
 
-  static const char* kNodes[] = {"Geometry", "Physics", "Mesh", "Study", "Results"};
+  // Taller tree-node items via FramePadding
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 7.0f));
+
+  static const char* kNodeNames[] = {"Geometry", "Physics", "Mesh", "Study", "Results"};
   for (int i = 0; i < 5; ++i) {
     NavNode node = static_cast<NavNode>(i);
-    bool selected = (s.nav == node);
-
     ImGuiTreeNodeFlags flags =
-        ImGuiTreeNodeFlags_Leaf |
-        ImGuiTreeNodeFlags_NoTreePushOnOpen |
-        ImGuiTreeNodeFlags_SpanFullWidth;
-    if (selected) flags |= ImGuiTreeNodeFlags_Selected;
-
-    if (i == 4 && s.has_results) {
+        ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen |
+        ImGuiTreeNodeFlags_SpanFullWidth | ImGuiTreeNodeFlags_FramePadding;
+    if (s.nav == node) flags |= ImGuiTreeNodeFlags_Selected;
+    if (i == 4 && s.has_results)
       ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.2f, 0.75f, 0.3f, 1.0f));
-    }
-    ImGui::TreeNodeEx(kNodes[i], flags);
+    ImGui::TreeNodeEx(kNodeNames[i], flags);
     if (i == 4 && s.has_results) ImGui::PopStyleColor();
-
     if (ImGui::IsItemClicked()) s.nav = node;
   }
 
-  ImGui::End();  // Model Builder
+  ImGui::PopStyleVar();
+  ImGui::End();
 
-  // ---- Configuration / Results window ----
+  // ---- Configuration ----
   ImGui::Begin("Configuration", nullptr, 0);
-
-  // Breadcrumb header
-  static const char* kNodeTitles[] = {
-    "Geometry", "Physics", "Mesh", "Study", "Results"
-  };
-  ImGui::TextColored(ImVec4(0.4f, 0.6f, 1.0f, 1.0f),
-      "%s", kNodeTitles[static_cast<int>(s.nav)]);
+  static const char* kTitles[] = {"Geometry", "Physics", "Mesh", "Study", "Results"};
+  ImGui::TextColored(ImVec4(0.4f, 0.6f, 1.0f, 1.0f), "%s", kTitles[static_cast<int>(s.nav)]);
   ImGui::Separator();
   ImGui::Spacing();
-
   ShowConfigPanel(s);
+  ImGui::End();
 
-  ImGui::End();  // Configuration
+  // ---- Geometry View ----
+  ImGui::Begin("Geometry View", nullptr,
+      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+  ShowGeometryView(s);
+  ImGui::End();
 }
 
 // ============================================================
@@ -518,7 +1244,6 @@ int main() {
   glfwSetErrorCallback([](int error, const char* desc) {
     fprintf(stderr, "GLFW error %d: %s\n", error, desc);
   });
-
   if (!glfwInit()) return 1;
 
 #ifdef __APPLE__
@@ -549,7 +1274,6 @@ int main() {
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
-  // Load Roboto at the physical pixel size so it's crisp on Retina displays.
   float xscale = 1.0f;
   glfwGetWindowContentScale(window, &xscale, nullptr);
   const float font_size = std::floor(15.0f * xscale);
@@ -566,7 +1290,6 @@ int main() {
 
   while (!glfwWindowShouldClose(window)) {
     glfwPollEvents();
-
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
@@ -574,17 +1297,14 @@ int main() {
     RenderFrame(state);
 
     ImGui::Render();
-
     int fb_w, fb_h;
     glfwGetFramebufferSize(window, &fb_w, &fb_h);
     glViewport(0, 0, fb_w, fb_h);
 
-    // Clear to the theme's window background colour.
     const ImVec4 bg = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
     glClearColor(bg.x, bg.y, bg.z, bg.w);
     glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
     glfwSwapBuffers(window);
   }
 
@@ -592,9 +1312,7 @@ int main() {
   ImGui_ImplGlfw_Shutdown();
   ImPlot::DestroyContext();
   ImGui::DestroyContext();
-
   glfwDestroyWindow(window);
   glfwTerminate();
-
   return 0;
 }

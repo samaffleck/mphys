@@ -69,16 +69,20 @@ void TransientSolver::Solve(
   sv.Scatter(yy_, scratch_y_, scratch_alg_);
   if (output_cb) output_cb(t0, scratch_y_, scratch_alg_);
 
+  // Use IDA_ONE_STEP so the callback fires at every accepted internal step,
+  // allowing the caller to filter snapshots at arbitrary intervals.
+  CheckFlag(IDASetStopTime(ida_mem_, t_end), "IDASetStopTime");
+
   double t_ret = t0;
   while (t_ret < t_end) {
-    const int flag = IDASolve(ida_mem_, t_end, &t_ret, yy_, yp_, IDA_NORMAL);
+    const int flag = IDASolve(ida_mem_, t_end, &t_ret, yy_, yp_, IDA_ONE_STEP);
     if (flag < 0) {
       throw std::runtime_error("IDASolve failed with flag " +
                                std::to_string(flag));
     }
     sv.Scatter(yy_, scratch_y_, scratch_alg_);
     if (output_cb) output_cb(t_ret, scratch_y_, scratch_alg_);
-    if (flag == IDA_TSTOP_RETURN || flag == IDA_SUCCESS) break;
+    if (flag == IDA_TSTOP_RETURN || t_ret >= t_end) break;
   }
 }
 
