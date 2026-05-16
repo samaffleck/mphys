@@ -32,7 +32,7 @@
             "binaryDir": "${sourceDir}/build/mac-release",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
-                "BUILD_TESTS": "OFF",
+                "BUILD_TESTS": "ON",
                 "BUILD_GUI": "ON"
             }
         }

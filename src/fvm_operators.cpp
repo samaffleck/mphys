@@ -30,6 +30,33 @@ void RightGhost(const Field& phi, const Mesh1D& mesh, const FieldBcs& bcs,
   }
 }
 
+// Geometric factors for cell i in the chosen coordinate system.
+//
+// face area A(r):  1  (Cartesian),  r  (cylindrical),  r²  (spherical)
+// cell volume V:   dx, (r_r²-r_l²)/2, (r_r³-r_l³)/3
+//
+// The FVM flux balance for any coordinate system is:
+//   cell residual = (A_right * flux_right - A_left * flux_left) / V
+struct GeomFactors {
+  double area_left;
+  double area_right;
+  double volume;
+};
+
+static GeomFactors CellGeom(int i, const Mesh1D& mesh) {
+  const double r_l = mesh.face_positions[i];
+  const double r_r = mesh.face_positions[i + 1];
+  switch (mesh.coord_system) {
+    case CoordSystem::kCylindrical:
+      return {r_l, r_r, (r_r * r_r - r_l * r_l) / 2.0};
+    case CoordSystem::kSpherical:
+      return {r_l * r_l, r_r * r_r,
+              (r_r * r_r * r_r - r_l * r_l * r_l) / 3.0};
+    default:  // kCartesian
+      return {1.0, 1.0, mesh.dx[i]};
+  }
+}
+
 }  // namespace
 
 Field Ddt(const Field& ydot) { return ydot; }
@@ -63,7 +90,8 @@ Field Div(const Field& face_flux, const Mesh1D& mesh) {
 
   Field d("div_" + face_flux.name, n, 0.0);
   for (int i = 0; i < n; ++i) {
-    d[i] = (face_flux[i + 1] - face_flux[i]) / mesh.dx[i];
+    const auto g = CellGeom(i, mesh);
+    d[i] = (g.area_right * face_flux[i + 1] - g.area_left * face_flux[i]) / g.volume;
   }
   return d;
 }
@@ -72,33 +100,11 @@ Field Laplacian(const Field& phi, double D, const Mesh1D& mesh, const FieldBcs& 
   const int n = phi.NCells();
   Field lap("lap_" + phi.name, n, 0.0);
 
-  // Left boundary
-  double phi_ghost_l, x_ghost_l;
-  LeftGhost(phi, mesh, bcs, phi_ghost_l, x_ghost_l);
-  const double grad_left = (phi[0] - phi_ghost_l) / (mesh.cell_centres[0] - x_ghost_l);
-
-  // Right boundary
-  double phi_ghost_r, x_ghost_r;
-  RightGhost(phi, mesh, bcs, phi_ghost_r, x_ghost_r);
-  const double grad_right = (phi_ghost_r - phi[n - 1]) / (x_ghost_r - mesh.cell_centres[n - 1]);
-
-  // Left cell: uses left-boundary face and first interior face
-  if (n == 1) {
-    lap[0] = D * (grad_right - grad_left) / mesh.dx[0];
-  } else {
-    const double grad_r0 = (phi[1] - phi[0]) / mesh.df[0];
-    lap[0] = D * (grad_r0 - grad_left) / mesh.dx[0];
-
-    // Interior cells
-    for (int i = 1; i < n - 1; ++i) {
-      const double gr = (phi[i + 1] - phi[i]) / mesh.df[i];
-      const double gl = (phi[i] - phi[i - 1]) / mesh.df[i - 1];
-      lap[i] = D * (gr - gl) / mesh.dx[i];
-    }
-
-    // Right cell
-    const double grad_l_last = (phi[n - 1] - phi[n - 2]) / mesh.df[n - 2];
-    lap[n - 1] = D * (grad_right - grad_l_last) / mesh.dx[n - 1];
+  // Compute face-centred gradients (length n+1) and apply coordinate weighting.
+  Field g = Grad(phi, mesh, bcs);
+  for (int i = 0; i < n; ++i) {
+    const auto geom = CellGeom(i, mesh);
+    lap[i] = D * (geom.area_right * g[i + 1] - geom.area_left * g[i]) / geom.volume;
   }
 
   return lap;
@@ -111,11 +117,11 @@ Field Laplacian(const Field& phi, const Field& D_face, const Mesh1D& mesh,
 
   Field lap("lap_" + phi.name, n, 0.0);
 
-  // Build all face gradients
   Field g = Grad(phi, mesh, bcs);
-
   for (int i = 0; i < n; ++i) {
-    lap[i] = (D_face[i + 1] * g[i + 1] - D_face[i] * g[i]) / mesh.dx[i];
+    const auto geom = CellGeom(i, mesh);
+    lap[i] = (geom.area_right * D_face[i + 1] * g[i + 1] -
+              geom.area_left  * D_face[i]     * g[i]) / geom.volume;
   }
   return lap;
 }
