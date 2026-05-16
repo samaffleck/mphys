@@ -47,6 +47,39 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/external/sundials/CMakeLists.txt")
 endif()
 
 # ============================================================
+# GUI dependencies (ImGui + ImPlot, desktop only)
+# ============================================================
+option(BUILD_GUI "Build ImGui visualisation GUI" ON)
+
+if(BUILD_GUI AND NOT EMSCRIPTEN)
+    find_package(OpenGL REQUIRED)
+    find_package(glfw3 REQUIRED)
+
+    add_library(imgui STATIC
+        external/imgui/imgui.cpp
+        external/imgui/imgui_draw.cpp
+        external/imgui/imgui_tables.cpp
+        external/imgui/imgui_widgets.cpp
+        external/imgui/backends/imgui_impl_glfw.cpp
+        external/imgui/backends/imgui_impl_opengl3.cpp
+    )
+    target_include_directories(imgui PUBLIC
+        external/imgui
+        external/imgui/backends
+    )
+    target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
+    target_compile_options(imgui PRIVATE -w)
+
+    add_library(implot STATIC
+        external/implot/implot.cpp
+        external/implot/implot_items.cpp
+    )
+    target_include_directories(implot PUBLIC external/implot)
+    target_link_libraries(implot PUBLIC imgui)
+    target_compile_options(implot PRIVATE -w)
+endif()
+
+# ============================================================
 # Core library + executable
 # ============================================================
 add_subdirectory(src)
@@ -56,6 +89,13 @@ add_subdirectory(src)
 # ============================================================
 if(BUILD_EXAMPLES)
     add_subdirectory(examples)
+endif()
+
+# ============================================================
+# GUI
+# ============================================================
+if(BUILD_GUI AND NOT EMSCRIPTEN)
+    add_subdirectory(gui)
 endif()
 
 # ============================================================
