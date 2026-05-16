@@ -17,6 +17,7 @@
 #endif
 
 #include <GLFW/glfw3.h>
+#include "themes.h"
 
 #include "mphys/boundary_condition.hpp"
 #include "mphys/fvm_operators.hpp"
@@ -128,6 +129,9 @@ struct AppState {
   int                  snapshot_idx = 0;
   bool                 has_results  = false;
   std::string          status_msg;
+
+  // UI
+  bool dark_theme = true;
 };
 
 // ============================================================
@@ -416,6 +420,17 @@ static void RenderFrame(AppState& s) {
         RunSimulation(s);
       ImGui::EndMenu();
     }
+    if (ImGui::BeginMenu("View")) {
+      if (ImGui::MenuItem("Dark Theme",  nullptr, s.dark_theme))  {
+        s.dark_theme = true;
+        Themes::SetDarkTheme();
+      }
+      if (ImGui::MenuItem("Light Theme", nullptr, !s.dark_theme)) {
+        s.dark_theme = false;
+        Themes::SetLightTheme();
+      }
+      ImGui::EndMenu();
+    }
     if (ImGui::BeginMenu("Help")) {
       if (ImGui::BeginMenu("About")) {
         ImGui::TextUnformatted("mphys GUI — COMSOL-inspired 1D physics front-end");
@@ -533,12 +548,15 @@ int main() {
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
-  ImGui::StyleColorsDark();
-  ImGui::GetStyle().FrameRounding    = 3.0f;
-  ImGui::GetStyle().WindowRounding   = 4.0f;
-  ImGui::GetStyle().GrabRounding     = 3.0f;
-  ImGui::GetStyle().TabRounding      = 3.0f;
-  ImGui::GetStyle().WindowBorderSize = 1.0f;
+  // Load Roboto at the physical pixel size so it's crisp on Retina displays.
+  float xscale = 1.0f;
+  glfwGetWindowContentScale(window, &xscale, nullptr);
+  const float font_size = std::floor(15.0f * xscale);
+  io.Fonts->AddFontFromFileTTF(
+      MPHYS_ASSETS_DIR "/fonts/Roboto-VariableFont_wdth,wght.ttf", font_size);
+  io.FontGlobalScale = 1.0f / xscale;
+
+  Themes::SetDarkTheme();
 
   ImGui_ImplGlfw_InitForOpenGL(window, true);
   ImGui_ImplOpenGL3_Init(glsl_version);
@@ -559,7 +577,10 @@ int main() {
     int fb_w, fb_h;
     glfwGetFramebufferSize(window, &fb_w, &fb_h);
     glViewport(0, 0, fb_w, fb_h);
-    glClearColor(0.12f, 0.12f, 0.12f, 1.0f);
+
+    // Clear to the theme's window background colour.
+    const ImVec4 bg = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
+    glClearColor(bg.x, bg.y, bg.z, bg.w);
     glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 

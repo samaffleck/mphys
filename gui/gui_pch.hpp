@@ -1,6 +1,7 @@
 #pragma once
 
 // STL
+#include <cmath>
 #include <cstdio>
 #include <stdexcept>
 #include <string>
