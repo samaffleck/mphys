@@ -534,6 +534,7 @@ int main() {
   const char* glsl_version = "#version 130";
 #endif
 
+  glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
   GLFWwindow* window = glfwCreateWindow(1400, 900, "mphys", nullptr, nullptr);
   if (!window) { glfwTerminate(); return 1; }
 
