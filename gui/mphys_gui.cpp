@@ -10,16 +10,13 @@
  *   Steady Diffusion               (KINSOL)
  */
 
+// gui_pch.hpp (precompiled): imgui, imgui_internal, imgui_impl_*, implot, STL
+
 #ifdef __APPLE__
 #define GL_SILENCE_DEPRECATION
 #endif
 
 #include <GLFW/glfw3.h>
-#include "imgui.h"
-#include "imgui_internal.h"
-#include "imgui_impl_glfw.h"
-#include "imgui_impl_opengl3.h"
-#include "implot.h"
 
 #include "mphys/boundary_condition.hpp"
 #include "mphys/fvm_operators.hpp"
@@ -31,11 +28,6 @@
 #include "mphys/steady_solver.hpp"
 #include "mphys/sun_context.hpp"
 #include "mphys/transient_solver.hpp"
-
-#include <cstdio>
-#include <stdexcept>
-#include <string>
-#include <vector>
 
 // ============================================================
 // Physics model definitions

@@ -1,5 +1,7 @@
 add_executable(mphys_gui mphys_gui.cpp)
 
+target_precompile_headers(mphys_gui PRIVATE gui_pch.hpp)
+
 target_link_libraries(mphys_gui PRIVATE mphys_lib implot)
 
 if(APPLE)

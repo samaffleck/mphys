@@ -13,6 +13,8 @@ target_include_directories(mphys_lib PUBLIC
     ${CMAKE_SOURCE_DIR}/include
 )
 
+target_precompile_headers(mphys_lib PRIVATE pch.hpp)
+
 if(TARGET SUNDIALS::ida)
     target_link_libraries(mphys_lib PUBLIC SUNDIALS::ida SUNDIALS::idas)
 endif()

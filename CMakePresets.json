@@ -21,7 +21,8 @@
                 "CMAKE_BUILD_TYPE": "Debug",
                 "CMAKE_CXX_FLAGS_DEBUG": "-O0 -g3 -fno-omit-frame-pointer -fstandalone-debug",
                 "CMAKE_C_FLAGS_DEBUG":   "-O0 -g3 -fno-omit-frame-pointer -fstandalone-debug",
-                "BUILD_TESTS": "ON"
+                "BUILD_TESTS": "ON",
+                "BUILD_GUI": "ON"
             }
         },
         {
@@ -31,18 +32,35 @@
             "binaryDir": "${sourceDir}/build/mac-release",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
-                "BUILD_TESTS": "OFF"
+                "BUILD_TESTS": "OFF",
+                "BUILD_GUI": "ON"
             }
         }
     ],
     "buildPresets": [
         {
             "name": "mac-debug",
-            "configurePreset": "mac-debug"
+            "configurePreset": "mac-debug",
+            "jobs": 8
         },
         {
             "name": "mac-release",
-            "configurePreset": "mac-release"
+            "configurePreset": "mac-release",
+            "jobs": 8
+        },
+        {
+            "name": "mac-debug-gui",
+            "displayName": "macOS Debug — GUI only",
+            "configurePreset": "mac-debug",
+            "targets": ["mphys_gui"],
+            "jobs": 8
+        },
+        {
+            "name": "mac-release-gui",
+            "displayName": "macOS Release — GUI only",
+            "configurePreset": "mac-release",
+            "targets": ["mphys_gui"],
+            "jobs": 8
         }
     ]
 }

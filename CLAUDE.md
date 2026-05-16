@@ -4,21 +4,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build
 
-```bash
-# Configure (debug)
-cmake -B build/mac-debug -DCMAKE_BUILD_TYPE=Debug
+CMake presets are defined in `CMakePresets.json` (uses Ninja + clang from Homebrew LLVM). Both presets enable `BUILD_GUI=ON`.
 
-# Configure with GUI (requires brew install glfw)
-cmake -B build/mac-debug -DCMAKE_BUILD_TYPE=Debug -DBUILD_GUI=ON
+```bash
+# Configure
+cmake --preset mac-debug
+cmake --preset mac-release
 
 # Build everything
-cmake --build build/mac-debug -j8
+cmake --build --preset mac-debug
+cmake --build --preset mac-release
 
-# Build a specific target
-cmake --build build/mac-debug --target mphys_lib -j8
-cmake --build build/mac-debug --target mphys_gui -j8
-cmake --build build/mac-debug --target example_convection_diffusion -j8
+# Build GUI only (fastest iteration on GUI changes)
+cmake --build --preset mac-debug-gui
+cmake --build --preset mac-release-gui
 ```
+
+VS Code launch configs ("mphys GUI (Debug/Release)", etc.) and matching build tasks are in `.vscode/`.
 
 ## Tests
 
