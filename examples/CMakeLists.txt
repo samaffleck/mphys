@@ -1,0 +1,9 @@
+add_executable(example_convection_diffusion
+    convection_diffusion/main.cpp
+)
+target_link_libraries(example_convection_diffusion PRIVATE mphys_lib)
+
+add_executable(example_validation_1d_diffusion
+    validation_1d_diffusion/main.cpp
+)
+target_link_libraries(example_validation_1d_diffusion PRIVATE mphys_lib)

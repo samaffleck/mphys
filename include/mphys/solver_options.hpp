@@ -23,6 +23,7 @@ namespace mphys {
   public:
     void Check() const;
 
+    Tolerance tolerance;
     double initial_time_step = 1.0;
     double minimum_time_step = 1e-10;
     double maximum_time_step = 2.0;

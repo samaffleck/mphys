@@ -6,7 +6,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-option(BUILD_TESTS "Build tests" ON)
+option(BUILD_TESTS    "Build tests"    ON)
+option(BUILD_EXAMPLES "Build examples" ON)
 
 # Emscripten configuration
 if(EMSCRIPTEN)
@@ -36,7 +37,7 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/external/sundials/CMakeLists.txt")
     set(SUNDIALS_ENABLE_CVODE OFF CACHE BOOL "")
     set(SUNDIALS_ENABLE_CVODES OFF CACHE BOOL "")
     set(SUNDIALS_ENABLE_ARKODE OFF CACHE BOOL "")
-    set(SUNDIALS_ENABLE_KINSOL OFF CACHE BOOL "")
+    set(SUNDIALS_ENABLE_KINSOL ON CACHE BOOL "")
 
     # Silence warnings in SUNDIALS' own source files
     set(_saved_c_flags "${CMAKE_C_FLAGS}")
@@ -49,6 +50,13 @@ endif()
 # Core library + executable
 # ============================================================
 add_subdirectory(src)
+
+# ============================================================
+# Examples
+# ============================================================
+if(BUILD_EXAMPLES)
+    add_subdirectory(examples)
+endif()
 
 # ============================================================
 # Tests
