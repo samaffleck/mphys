@@ -1,0 +1,55 @@
+{
+    "mphys_state": {
+        "physics": 2,
+        "coord_system": 0,
+        "geo": {
+            "nodes": [
+                {
+                    "x": 0.0
+                },
+                {
+                    "x": 1.0
+                }
+            ],
+            "domains": [
+                {
+                    "n_cells": 100,
+                    "D": 1.0,
+                    "u": 0.0,
+                    "k": 0.0,
+                    "kappa": 1.0,
+                    "mu": 1.0
+                }
+            ],
+            "built": true
+        },
+        "geo_input_mode": 0,
+        "geo_lengths": [
+            1.0
+        ],
+        "geo_unit": 0,
+        "left_bc": {
+            "type": 0,
+            "value": 1.0
+        },
+        "right_bc": {
+            "type": 1,
+            "value": 0.0
+        },
+        "pb_left_bc": {
+            "type": 0,
+            "value": 2.0
+        },
+        "pb_right_bc": {
+            "type": 0,
+            "value": 1.0
+        },
+        "t_end": 10.0,
+        "dt_initial": 0.0010000000474974514,
+        "dt_max": 0.10000000149011612,
+        "dt_snapshot": 1.0,
+        "rel_tol": 9.999999974752428e-7,
+        "abs_tol": 9.99999993922529e-9,
+        "dark_theme": true
+    }
+}

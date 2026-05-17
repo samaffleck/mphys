@@ -25,10 +25,13 @@ class TransientSolver {
   TransientSolver(const TransientSolver&) = delete;
   TransientSolver& operator=(const TransientSolver&) = delete;
 
-  void Solve(double t0, double t_end,
-             std::function<void(double t, const std::vector<Field>&,
-                                const std::vector<double>&)>
-                 output_cb = {});
+  // Returns an empty string on success, or a warning/error message if the
+  // solver stopped early (e.g. convergence failure).  Partial results are
+  // still delivered via output_cb for every step that succeeded.
+  std::string Solve(double t0, double t_end,
+                    std::function<void(double t, const std::vector<Field>&,
+                                       const std::vector<double>&)>
+                        output_cb = {});
 
  private:
   static int ResidualCb(sunrealtype t, N_Vector yy, N_Vector yp, N_Vector rr,

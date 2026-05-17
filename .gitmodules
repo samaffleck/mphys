@@ -10,3 +10,9 @@
 [submodule "external/imgui"]
 	path = external/imgui
 	url = https://github.com/ocornut/imgui.git
+[submodule "external/cereal"]
+	path = external/cereal
+	url = https://github.com/USCiLab/cereal.git
+[submodule "external/tinyfiledialogs"]
+	path = external/tinyfiledialogs
+	url = https://github.com/native-toolkit/libtinyfiledialogs.git

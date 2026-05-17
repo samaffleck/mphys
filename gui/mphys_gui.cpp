@@ -13,6 +13,7 @@
 
 #include <GLFW/glfw3.h>
 #include "themes.h"
+#include "tinyfiledialogs.h"
 
 #include "mphys/boundary_condition.hpp"
 #include "mphys/fvm_operators.hpp"
@@ -256,6 +257,52 @@ class SteadyDiffModel : public mphys::Model {
   mphys::Field D_face_;
 };
 
+// 1D packed bed with Darcy's law + ideal-gas mass balance.
+// Two coupled equations kept explicit:
+//   (1) Darcy's Law  (algebraic): u + (κ/μ)·∂P/∂x = 0
+//   (2) Mass balance (transient): ∂P/∂t + ∂(P·u)/∂x = 0
+class DarcyPackedBedModel : public mphys::Model {
+ public:
+  DarcyPackedBedModel(const mphys::Mesh1D& mesh, mphys::StateVector& sv,
+                      std::vector<double> kappa,  // per-cell permeability [m²]
+                      std::vector<double> mu,     // per-cell viscosity    [Pa·s]
+                      const std::vector<double>& P_init,  // per-cell initial pressure
+                      mphys::BoundaryCondition P_lbc, mphys::BoundaryCondition P_rbc,
+                      mphys::BoundaryCondition u_lbc, mphys::BoundaryCondition u_rbc)
+      : Model(mesh, sv), kappa_(std::move(kappa)), mu_(std::move(mu)) {
+    P_ = AddField("P", 0.0);
+    u_ = AddField("u", 0.0);
+    auto& Pf = fields()[P_];
+    for (int i = 0; i < mesh_.n_cells; ++i) Pf[i] = P_init[i];
+    sv_.MarkFieldAlgebraic("u");   // Darcy has no ∂u/∂t — u is algebraic
+    SetBcs(P_, {P_lbc, P_rbc});
+    SetBcs(u_, {u_lbc, u_rbc});
+  }
+
+  void Residual(double,
+                const std::vector<mphys::Field>& y,
+                const std::vector<mphys::Field>& ydot,
+                const std::vector<double>&, const std::vector<double>&,
+                std::vector<mphys::Field>& rr, std::vector<double>&) override {
+    // ── Darcy's Law (algebraic) ──────────────────────────────────────────────
+    //   u + (κ/μ) · ∂P/∂x = 0
+    auto grad_P = mphys::fvm::Grad(y[P_], mesh_, bcs_[P_]);
+    for (int i = 0; i < mesh_.n_cells; ++i) {
+      double dPdx = 0.5 * (grad_P[i] + grad_P[i + 1]);  // cell-centre gradient
+      rr[u_][i] = y[u_][i] + (kappa_[i] / mu_[i]) * dPdx;
+    }
+    // ── Ideal-gas mass balance (ρ = PM/RT, T constant → ρ ∝ P) ─────────────
+    //   ∂P/∂t + ∂(P·u)/∂x = 0
+    auto u_face = mphys::fvm::InterpolateToFaces(y[u_], mesh_, bcs_[u_]);
+    rr[P_] = mphys::fvm::Ddt(ydot[P_])
+           + mphys::fvm::Convection(y[P_], u_face, mesh_, bcs_[P_]);
+  }
+
+ private:
+  int P_ = 0, u_ = 1;
+  std::vector<double> kappa_, mu_;
+};
+
 // ============================================================
 // Geometry and application state
 // ============================================================
@@ -264,13 +311,22 @@ struct GeoNode   { float x = 0.0f; };
 
 struct GeoDomain {
   int   n_cells = 20;
-  float D = 1.0f;   // diffusivity  [user length² / s]
-  float u = 0.0f;   // velocity     [user length / s]   (conv-diff only)
-  float k = 0.0f;   // reaction rate [1/s]              (conv-diff only)
+  // Convection-Diffusion-Reaction
+  float D     = 1.0f;    // diffusivity   [m²/s]
+  float u     = 0.0f;    // velocity      [m/s]
+  float k     = 0.0f;    // reaction rate [1/s]
+  // Darcy Packed Bed
+  float kappa = 1e-10f;  // permeability  [m²]
+  float mu    = 1.8e-5f; // dyn. viscosity [Pa·s]
 };
 
 struct NodeBc {
   int   type  = 0;    // 0 = Dirichlet, 1 = Neumann
+  float value = 0.0f;
+};
+
+struct PackedBedBc {
+  int   type  = 0;    // 0 = Pressure, 1 = Velocity
   float value = 0.0f;
 };
 
@@ -283,7 +339,7 @@ struct Geometry1D {
 };
 
 enum class NavNode { Geometry, Physics, Mesh, Study, Results };
-enum class PhysicsModule { ConvectionDiffusion, SteadyDiffusion };
+enum class PhysicsModule { ConvectionDiffusion, SteadyDiffusion, DarcyPackedBed };
 
 struct AppState {
   NavNode       nav     = NavNode::Geometry;
@@ -303,6 +359,9 @@ struct AppState {
 
   NodeBc left_bc  = {0, 1.0f};
   NodeBc right_bc = {1, 0.0f};
+  // Darcy packed bed BCs (pressure or velocity at each terminal node)
+  PackedBedBc pb_left_bc  = {0, 2.0f};   // Pressure = 2 (high)
+  PackedBedBc pb_right_bc = {0, 1.0f};   // Pressure = 1 (low)
 
   float t_end        = 50.0f;
   float dt_initial   = 1e-3f;
@@ -379,6 +438,22 @@ static std::vector<double> ComputeCellK(const Geometry1D& geo) {
   return k;
 }
 
+static std::vector<double> ComputeCellKappa(const Geometry1D& geo) {
+  std::vector<double> v;
+  for (const auto& d : geo.domains)
+    for (int i = 0; i < d.n_cells; ++i)
+      v.push_back(d.kappa);
+  return v;
+}
+
+static std::vector<double> ComputeCellMu(const Geometry1D& geo) {
+  std::vector<double> v;
+  for (const auto& d : geo.domains)
+    for (int i = 0; i < d.n_cells; ++i)
+      v.push_back(d.mu);
+  return v;
+}
+
 // ============================================================
 // Composite mesh builder
 // ============================================================
@@ -445,11 +520,62 @@ static void RunSimulation(AppState& s) {
 
     double dt_snap = std::max(static_cast<double>(s.dt_snapshot),
                                static_cast<double>(s.dt_max));
-    if (s.physics == PhysicsModule::ConvectionDiffusion) {
+    std::string solver_warning;
+    if (s.physics == PhysicsModule::DarcyPackedBed) {
+      auto kappa_cell = ComputeCellKappa(s.geo);
+      auto mu_cell    = ComputeCellMu(s.geo);
+
+      double kL = s.geo.domains.front().kappa, muL = s.geo.domains.front().mu;
+      double kR = s.geo.domains.back().kappa,  muR = s.geo.domains.back().mu;
+
+      // Pressure BC → Dirichlet on P; Velocity BC → Neumann on P (from Darcy)
+      auto make_P_bc = [](const PackedBedBc& bc, double kp, double mp) {
+        return bc.type == 0 ? mphys::DirichletBc(bc.value)
+                            : mphys::NeumannBc(-mp * bc.value / kp);
+      };
+      // Velocity BC → Dirichlet on u; Pressure BC → Neumann on u (free)
+      auto make_u_bc = [](const PackedBedBc& bc) {
+        return bc.type == 1 ? mphys::DirichletBc(bc.value)
+                            : mphys::NeumannBc(0.0);
+      };
+
+      auto P_lbc = make_P_bc(s.pb_left_bc,  kL, muL);
+      auto P_rbc = make_P_bc(s.pb_right_bc, kR, muR);
+      auto u_lbc = make_u_bc(s.pb_left_bc);
+      auto u_rbc = make_u_bc(s.pb_right_bc);
+
+      // Initialise P with a linear profile so IDACalcIC has a consistent starting point.
+      double P_scalar = (s.pb_left_bc.type == 0) ? s.pb_left_bc.value
+                      : (s.pb_right_bc.type == 0) ? s.pb_right_bc.value
+                      : 101325.0;
+      double P_L_val  = (s.pb_left_bc.type  == 0) ? (double)s.pb_left_bc.value  : P_scalar;
+      double P_R_val  = (s.pb_right_bc.type == 0) ? (double)s.pb_right_bc.value : P_scalar;
+      std::vector<double> P_init_vec(mesh.n_cells);
+      {
+        double x_L = mesh.cell_centres.front(), x_R = mesh.cell_centres.back();
+        double span = (x_R > x_L) ? (x_R - x_L) : 1.0;
+        for (int i = 0; i < mesh.n_cells; ++i)
+          P_init_vec[i] = P_L_val + (P_R_val - P_L_val) *
+                          (mesh.cell_centres[i] - x_L) / span;
+      }
+
+      DarcyPackedBedModel model(mesh, sv, kappa_cell, mu_cell, P_init_vec,
+                                P_lbc, P_rbc, u_lbc, u_rbc);
+      mphys::TransientSolver solver(model, opts, sunctx);
+      double next_snap = 0.0;
+      solver_warning = solver.Solve(0.0, static_cast<double>(s.t_end),
+          [&](double t, const std::vector<mphys::Field>& f,
+              const std::vector<double>& a) {
+            if (t >= next_snap - 1e-12) {
+              s.result.Record(t, f, a);
+              next_snap += dt_snap;
+            }
+          });
+    } else if (s.physics == PhysicsModule::ConvectionDiffusion) {
       ConvDiffModel model(mesh, sv, D_face, u_face, k_cell, lbc, rbc);
       mphys::TransientSolver solver(model, opts, sunctx);
       double next_snap = 0.0;
-      solver.Solve(0.0, static_cast<double>(s.t_end),
+      solver_warning = solver.Solve(0.0, static_cast<double>(s.t_end),
           [&](double t, const std::vector<mphys::Field>& f,
               const std::vector<double>& a) {
             if (t >= next_snap - 1e-12) {
@@ -464,14 +590,121 @@ static void RunSimulation(AppState& s) {
       s.result.Record(0.0, model.fields(), model.algebraics());
     }
 
-    s.plot_time   = static_cast<float>(s.result.snapshots.back().t);
-    s.has_results = true;
-    s.nav          = NavNode::Results;
-    s.status_msg   = "Done — " + std::to_string(s.result.snapshots.size()) + " snapshots";
+    if (!s.result.snapshots.empty()) {
+      s.plot_time   = static_cast<float>(s.result.snapshots.back().t);
+      s.has_results = true;
+      s.nav         = NavNode::Results;
+    }
+    if (!solver_warning.empty())
+      s.status_msg = "Warning: " + solver_warning +
+                     " (" + std::to_string(s.result.snapshots.size()) + " snapshots)";
+    else
+      s.status_msg = "Done — " + std::to_string(s.result.snapshots.size()) + " snapshots";
 
   } catch (const std::exception& e) {
     s.status_msg = std::string("Error: ") + e.what();
   }
+}
+
+// ============================================================
+// Cereal serialisation — non-intrusive, JSON-friendly
+// ============================================================
+
+template<class Ar> void serialize(Ar& ar, GeoNode& v) {
+  ar(cereal::make_nvp("x", v.x));
+}
+
+template<class Ar> void serialize(Ar& ar, GeoDomain& v) {
+  ar(cereal::make_nvp("n_cells", v.n_cells),
+     cereal::make_nvp("D",       v.D),
+     cereal::make_nvp("u",       v.u),
+     cereal::make_nvp("k",       v.k),
+     cereal::make_nvp("kappa",   v.kappa),
+     cereal::make_nvp("mu",      v.mu));
+}
+
+template<class Ar> void serialize(Ar& ar, NodeBc& v) {
+  ar(cereal::make_nvp("type",  v.type),
+     cereal::make_nvp("value", v.value));
+}
+
+template<class Ar> void serialize(Ar& ar, PackedBedBc& v) {
+  ar(cereal::make_nvp("type",  v.type),
+     cereal::make_nvp("value", v.value));
+}
+
+template<class Ar> void serialize(Ar& ar, Geometry1D& v) {
+  ar(cereal::make_nvp("nodes",   v.nodes),
+     cereal::make_nvp("domains", v.domains),
+     cereal::make_nvp("built",   v.built));
+}
+
+// Split save/load for AppState so enums round-trip cleanly as ints.
+template<class Ar> void save(Ar& ar, const AppState& v) {
+  ar(cereal::make_nvp("physics",        static_cast<int>(v.physics)),
+     cereal::make_nvp("coord_system",   static_cast<int>(v.coord_system)),
+     cereal::make_nvp("geo",            v.geo),
+     cereal::make_nvp("geo_input_mode", v.geo_input_mode),
+     cereal::make_nvp("geo_lengths",    v.geo_lengths),
+     cereal::make_nvp("geo_unit",       v.geo_unit),
+     cereal::make_nvp("left_bc",        v.left_bc),
+     cereal::make_nvp("right_bc",       v.right_bc),
+     cereal::make_nvp("pb_left_bc",     v.pb_left_bc),
+     cereal::make_nvp("pb_right_bc",    v.pb_right_bc),
+     cereal::make_nvp("t_end",          v.t_end),
+     cereal::make_nvp("dt_initial",     v.dt_initial),
+     cereal::make_nvp("dt_max",         v.dt_max),
+     cereal::make_nvp("dt_snapshot",    v.dt_snapshot),
+     cereal::make_nvp("rel_tol",        v.rel_tol),
+     cereal::make_nvp("abs_tol",        v.abs_tol),
+     cereal::make_nvp("dark_theme",     v.dark_theme));
+}
+
+template<class Ar> void load(Ar& ar, AppState& v) {
+  int physics_i = 0, coord_i = 0;
+  ar(cereal::make_nvp("physics",        physics_i),
+     cereal::make_nvp("coord_system",   coord_i),
+     cereal::make_nvp("geo",            v.geo),
+     cereal::make_nvp("geo_input_mode", v.geo_input_mode),
+     cereal::make_nvp("geo_lengths",    v.geo_lengths),
+     cereal::make_nvp("geo_unit",       v.geo_unit),
+     cereal::make_nvp("left_bc",        v.left_bc),
+     cereal::make_nvp("right_bc",       v.right_bc),
+     cereal::make_nvp("pb_left_bc",     v.pb_left_bc),
+     cereal::make_nvp("pb_right_bc",    v.pb_right_bc),
+     cereal::make_nvp("t_end",          v.t_end),
+     cereal::make_nvp("dt_initial",     v.dt_initial),
+     cereal::make_nvp("dt_max",         v.dt_max),
+     cereal::make_nvp("dt_snapshot",    v.dt_snapshot),
+     cereal::make_nvp("rel_tol",        v.rel_tol),
+     cereal::make_nvp("abs_tol",        v.abs_tol),
+     cereal::make_nvp("dark_theme",     v.dark_theme));
+  v.physics      = static_cast<PhysicsModule>(physics_i);
+  v.coord_system = static_cast<mphys::CoordSystem>(coord_i);
+}
+
+static void SaveState(const AppState& s, const std::string& path) {
+  std::ofstream os(path);
+  if (!os) throw std::runtime_error("Cannot open for writing: " + path);
+  cereal::JSONOutputArchive ar(os);
+  ar(cereal::make_nvp("mphys_state", const_cast<AppState&>(s)));
+}
+
+static void LoadState(AppState& s, const std::string& path) {
+  std::ifstream is(path);
+  if (!is) throw std::runtime_error("Cannot open file: " + path);
+  {
+    cereal::JSONInputArchive ar(is);
+    ar(cereal::make_nvp("mphys_state", s));
+  }
+  // Clear runtime-only state
+  s.nav         = NavNode::Geometry;
+  s.has_results = false;
+  s.result.snapshots.clear();
+  s.cell_centres.clear();
+  s.plot_time   = 0.0f;
+  s.status_msg.clear();
+  s.geo.selected_node = s.geo.selected_domain = -1;
 }
 
 // ============================================================
@@ -835,14 +1068,19 @@ static void ShowGeometryView(AppState& s) {
 // ============================================================
 
 static void ShowPhysicsPanel(AppState& s) {
-  static constexpr const char* kMods[] = {"Convection-Diffusion-Reaction", "Steady Diffusion"};
-  bool transient = (s.physics == PhysicsModule::ConvectionDiffusion);
+  static constexpr const char* kMods[] = {
+      "Convection-Diffusion-Reaction",
+      "Steady Diffusion",
+      "Darcy Packed Bed"
+  };
+  bool is_darcy     = (s.physics == PhysicsModule::DarcyPackedBed);
+  bool is_transient = (s.physics == PhysicsModule::ConvectionDiffusion || is_darcy);
 
   ImGui::SeparatorText("Physics Module");
   ImGui::Spacing();
   int sel = static_cast<int>(s.physics);
   ImGui::SetNextItemWidth(-1.0f);
-  if (ImGui::Combo("##phys", &sel, kMods, 2))
+  if (ImGui::Combo("##phys", &sel, kMods, 3))
     s.physics = static_cast<PhysicsModule>(sel);
 
   ImGui::Spacing();
@@ -856,17 +1094,25 @@ static void ShowPhysicsPanel(AppState& s) {
       ImGui::SeparatorText(sec);
       ImGui::Spacing();
 
-      char id_D[16], id_u[16], id_k[16];
-      snprintf(id_D, sizeof(id_D), "##D%d", d);
-      snprintf(id_u, sizeof(id_u), "##u%d", d);
-      snprintf(id_k, sizeof(id_k), "##k%d", d);
-
-      LabeledFloat("Diffusivity", id_D, &dom.D, "m\xc2\xb2/s");
-      if (transient) {
+      if (is_darcy) {
+        char id_k[16], id_m[16];
+        snprintf(id_k, sizeof(id_k), "##kp%d", d);
+        snprintf(id_m, sizeof(id_m), "##mu%d", d);
+        LabeledFloat("Permeability",      id_k, &dom.kappa, "m\xc2\xb2");
         ImGui::Spacing();
-        LabeledFloat("Velocity",     id_u, &dom.u, "m/s");
-        ImGui::Spacing();
-        LabeledFloat("Reaction rate", id_k, &dom.k, "1/s");
+        LabeledFloat("Dynamic viscosity", id_m, &dom.mu,    "Pa\xc2\xb7s");
+      } else {
+        char id_D[16], id_u[16], id_k[16];
+        snprintf(id_D, sizeof(id_D), "##D%d", d);
+        snprintf(id_u, sizeof(id_u), "##u%d", d);
+        snprintf(id_k, sizeof(id_k), "##k%d", d);
+        LabeledFloat("Diffusivity", id_D, &dom.D, "m\xc2\xb2/s");
+        if (is_transient) {
+          ImGui::Spacing();
+          LabeledFloat("Velocity",      id_u, &dom.u, "m/s");
+          ImGui::Spacing();
+          LabeledFloat("Reaction rate", id_k, &dom.k, "1/s");
+        }
       }
       ImGui::Spacing();
     }
@@ -881,25 +1127,48 @@ static void ShowPhysicsPanel(AppState& s) {
     return;
   }
 
-  auto ShowBc = [](const char* label, float x_pos, NodeBc& bc) {
-    char buf[64]; snprintf(buf, sizeof(buf), "%s  (x = %.4g)", label, (double)x_pos);
-    ImGui::TextUnformatted(buf);
-    ImGui::Spacing();
-    char rid[64], nid[64], vid[64];
-    snprintf(rid, sizeof(rid), "Dirichlet##t%s", label);
-    snprintf(nid, sizeof(nid), "Neumann##t%s",   label);
-    ImGui::RadioButton(rid, &bc.type, 0); ImGui::SameLine();
-    ImGui::RadioButton(nid, &bc.type, 1);
-    snprintf(vid, sizeof(vid), "##v%s", label);
-    ImGui::SetNextItemWidth(-1.0f);
-    ImGui::InputFloat(vid, &bc.value, 0, 0, "%.4g");
-  };
+  if (is_darcy) {
+    // Packed bed: each boundary is either a Pressure or Velocity specification
+    auto ShowPbBc = [](const char* label, float x_pos, PackedBedBc& bc) {
+      char buf[64]; snprintf(buf, sizeof(buf), "%s  (x = %.4g)", label, (double)x_pos);
+      ImGui::TextUnformatted(buf);
+      ImGui::Spacing();
+      char r0[64], r1[64], vid[64];
+      snprintf(r0,  sizeof(r0),  "Pressure##t%s",  label);
+      snprintf(r1,  sizeof(r1),  "Velocity##t%s",  label);
+      snprintf(vid, sizeof(vid), "##pbv%s",         label);
+      ImGui::RadioButton(r0, &bc.type, 0); ImGui::SameLine();
+      ImGui::RadioButton(r1, &bc.type, 1);
+      ImGui::SetNextItemWidth(-1.0f - kUnitColWidth);
+      float avail = ImGui::GetContentRegionAvail().x;
+      const char* unit = (bc.type == 0) ? "Pa" : "m/s";
+      ImGui::SetNextItemWidth(avail - ImGui::CalcTextSize(unit).x - 8.0f);
+      ExprInputFloat(vid, &bc.value);
+      ImGui::SameLine(0, 6); ImGui::TextDisabled("%s", unit);
+    };
 
-  ShowBc("Boundary 1", s.geo.nodes.front().x, s.left_bc);
-  ImGui::Spacing();
-  ImGui::Separator();
-  ImGui::Spacing();
-  ShowBc("Boundary 2", s.geo.nodes.back().x,  s.right_bc);
+    ShowPbBc("Boundary 1", s.geo.nodes.front().x, s.pb_left_bc);
+    ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+    ShowPbBc("Boundary 2", s.geo.nodes.back().x,  s.pb_right_bc);
+  } else {
+    auto ShowBc = [](const char* label, float x_pos, NodeBc& bc) {
+      char buf[64]; snprintf(buf, sizeof(buf), "%s  (x = %.4g)", label, (double)x_pos);
+      ImGui::TextUnformatted(buf);
+      ImGui::Spacing();
+      char rid[64], nid[64], vid[64];
+      snprintf(rid, sizeof(rid), "Dirichlet##t%s", label);
+      snprintf(nid, sizeof(nid), "Neumann##t%s",   label);
+      ImGui::RadioButton(rid, &bc.type, 0); ImGui::SameLine();
+      ImGui::RadioButton(nid, &bc.type, 1);
+      snprintf(vid, sizeof(vid), "##v%s", label);
+      ImGui::SetNextItemWidth(-1.0f);
+      ImGui::InputFloat(vid, &bc.value, 0, 0, "%.4g");
+    };
+
+    ShowBc("Boundary 1", s.geo.nodes.front().x, s.left_bc);
+    ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+    ShowBc("Boundary 2", s.geo.nodes.back().x,  s.right_bc);
+  }
 
   if ((int)s.geo.nodes.size() > 2) {
     ImGui::Spacing();
@@ -950,7 +1219,7 @@ static void ShowMeshPanel(AppState& s) {
 }
 
 static void ShowStudyPanel(AppState& s) {
-  bool transient = (s.physics == PhysicsModule::ConvectionDiffusion);
+  bool transient = (s.physics != PhysicsModule::SteadyDiffusion);
 
   ImGui::SeparatorText("Solver");
   ImGui::TextUnformatted(transient ? "Transient  (SUNDIALS IDA)"
@@ -1152,6 +1421,55 @@ static void RenderFrame(AppState& s) {
 
   if (ImGui::BeginMenuBar()) {
     if (ImGui::BeginMenu("File")) {
+      if (ImGui::MenuItem("Open...", "Ctrl+O")) {
+        static const char* kFilter[] = {"*.json"};
+        const char* path = tinyfd_openFileDialog(
+            "Open mphys state", "", 1, kFilter, "mphys JSON (*.json)", 0);
+        if (path) {
+          try {
+            LoadState(s, path);
+            s.status_msg = std::string("Loaded: ") + path;
+          } catch (const std::exception& e) {
+            s.status_msg = std::string("Error: ") + e.what();
+          }
+        }
+      }
+      if (ImGui::MenuItem("Save...", "Ctrl+S")) {
+        static const char* kFilter[] = {"*.json"};
+        const char* path = tinyfd_saveFileDialog(
+            "Save mphys state", "untitled.json", 1, kFilter, "mphys JSON (*.json)");
+        if (path) {
+          try {
+            SaveState(s, path);
+            s.status_msg = std::string("Saved: ") + path;
+          } catch (const std::exception& e) {
+            s.status_msg = std::string("Error: ") + e.what();
+          }
+        }
+      }
+      ImGui::Separator();
+      if (ImGui::BeginMenu("Examples")) {
+        // Enumerate *.json files in MPHYS_ASSETS_DIR/examples/
+        static const std::string kExDir = std::string(MPHYS_ASSETS_DIR) + "/examples/";
+        // Build list once — tinyfd doesn't enumerate; use a hardcoded scan via filesystem
+        // For simplicity list well-known examples embedded at compile time.
+        // Add new entries here when new example JSON files are added to assets/examples/.
+        static const char* kExamples[] = {
+            "darcy_packed_bed.json",
+        };
+        for (const char* ex : kExamples) {
+          if (ImGui::MenuItem(ex)) {
+            try {
+              LoadState(s, kExDir + ex);
+              s.status_msg = std::string("Loaded example: ") + ex;
+            } catch (const std::exception& e) {
+              s.status_msg = std::string("Error: ") + e.what();
+            }
+          }
+        }
+        ImGui::EndMenu();
+      }
+      ImGui::Separator();
       if (ImGui::MenuItem("Quit", "Alt+F4"))
         glfwSetWindowShouldClose(glfwGetCurrentContext(), GLFW_TRUE);
       ImGui::EndMenu();

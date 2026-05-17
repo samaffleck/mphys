@@ -53,37 +53,41 @@ TransientSolver::TransientSolver(Model& model, const SolverOptions& opts,
   CheckFlag(IDASetMaxNumSteps(ida_mem_, 100000), "IDASetMaxNumSteps");
 }
 
-void TransientSolver::Solve(
+std::string TransientSolver::Solve(
     double t0, double t_end,
     std::function<void(double, const std::vector<Field>&,
                        const std::vector<double>&)>
         output_cb) {
   StateVector& sv = model_.state_vector();
 
-  // Compute consistent initial conditions before the first step
-  CheckFlag(IDACalcIC(ida_mem_, IDA_YA_YDP_INIT,
-                      t0 + opts_.initial_time_step),
-            "IDACalcIC");
+  // Try to compute consistent initial conditions; skip if it fails (IDA can
+  // sometimes recover on the first real step).
+  const int ic_flag = IDACalcIC(ida_mem_, IDA_YA_YDP_INIT,
+                                t0 + opts_.initial_time_step);
+  if (ic_flag < 0) {
+    // Non-fatal — proceed with the user-supplied initial guess.
+    std::fprintf(stderr, "[mphys] IDACalcIC failed (flag %d) — proceeding "
+                         "with supplied initial conditions\n", ic_flag);
+  }
 
-  // Fire callback with the initial state
+  // Fire callback with the initial state.
   sv.Scatter(yy_, scratch_y_, scratch_alg_);
   if (output_cb) output_cb(t0, scratch_y_, scratch_alg_);
 
-  // Use IDA_ONE_STEP so the callback fires at every accepted internal step,
-  // allowing the caller to filter snapshots at arbitrary intervals.
   CheckFlag(IDASetStopTime(ida_mem_, t_end), "IDASetStopTime");
 
   double t_ret = t0;
   while (t_ret < t_end) {
     const int flag = IDASolve(ida_mem_, t_end, &t_ret, yy_, yp_, IDA_ONE_STEP);
     if (flag < 0) {
-      throw std::runtime_error("IDASolve failed with flag " +
-                               std::to_string(flag));
+      return "Solver stopped at t=" + std::to_string(t_ret) +
+             " (IDASolve flag " + std::to_string(flag) + ")";
     }
     sv.Scatter(yy_, scratch_y_, scratch_alg_);
     if (output_cb) output_cb(t_ret, scratch_y_, scratch_alg_);
     if (flag == IDA_TSTOP_RETURN || t_ret >= t_end) break;
   }
+  return {};
 }
 
 // static
