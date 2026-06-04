@@ -1,5 +1,4 @@
 add_library(mphys_lib STATIC
-    mphys.cpp
     solver_options.cpp
     mesh.cpp
     topology.cpp
@@ -16,6 +15,10 @@ add_library(mphys_lib STATIC
 target_include_directories(mphys_lib PUBLIC
     ${CMAKE_SOURCE_DIR}/include
 )
+
+# Namespaced alias so consumers can link `mphys::mphys` whether mphys is pulled
+# in via FetchContent / add_subdirectory or (eventually) find_package.
+add_library(mphys::mphys ALIAS mphys_lib)
 
 target_precompile_headers(mphys_lib PRIVATE pch.hpp)
 

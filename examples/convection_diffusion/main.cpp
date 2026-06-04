@@ -1,16 +1,7 @@
 #include <print>
 #include <vector>
 
-#include "mphys/boundary_condition.hpp"
-#include "mphys/field.hpp"
-#include "mphys/fvm_operators.hpp"
-#include "mphys/mesh.hpp"
-#include "mphys/model.hpp"
-#include "mphys/sim_result.hpp"
-#include "mphys/solver_options.hpp"
-#include "mphys/state_vector.hpp"
-#include "mphys/sun_context.hpp"
-#include "mphys/transient_solver.hpp"
+#include "mphys/mphys.hpp"
 
 // 1D transient convection-diffusion-reaction in a packed bed reactor.
 //
