@@ -12,3 +12,8 @@ add_executable(example_spherical_diffusion
     spherical_diffusion/main.cpp
 )
 target_link_libraries(example_spherical_diffusion PRIVATE mphys_lib)
+
+add_executable(example_single_particle_model
+    single_particle_model/main.cpp
+)
+target_link_libraries(example_single_particle_model PRIVATE mphys_lib)
