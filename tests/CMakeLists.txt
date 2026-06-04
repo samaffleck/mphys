@@ -10,6 +10,7 @@ add_executable(mphys_tests
     test_sundials_types.cpp
     test_integration_steady.cpp
     test_integration_transient.cpp
+    test_spm.cpp
 )
 
 target_link_libraries(mphys_tests
