@@ -106,4 +106,95 @@ Mesh MakeMesh1D(double x0, double x1, int n_cells, CoordSystem coord) {
   return mesh;
 }
 
+Mesh MakeStructuredMesh2D(double x0, double x1, int nx,
+                          double y0, double y1, int ny) {
+  assert(x1 > x0 && y1 > y0);
+  assert(nx > 0 && ny > 0);
+
+  Mesh mesh;
+  mesh.dim = 2;
+  mesh.coord_system = CoordSystem::kCartesian;
+
+  const double dx = (x1 - x0) / nx;
+  const double dy = (y1 - y0) / ny;
+  const auto cell_index = [nx](int i, int j) { return j * nx + i; };
+
+  // Cells (row-major: index = j*nx + i).
+  mesh.cells.resize(nx * ny);
+  for (int j = 0; j < ny; ++j) {
+    for (int i = 0; i < nx; ++i) {
+      Cell& c = mesh.cells[cell_index(i, j)];
+      c.centroid = {x0 + (i + 0.5) * dx, y0 + (j + 0.5) * dy, 0.0};
+      c.volume = dx * dy;
+    }
+  }
+
+  // Reserve: internal x-faces (nx-1)*ny + internal y-faces nx*(ny-1)
+  //          + boundary faces 2*ny + 2*nx.
+  mesh.faces.reserve((nx - 1) * ny + nx * (ny - 1) + 2 * ny + 2 * nx);
+
+  // Internal faces normal to x (between (i,j) and (i+1,j)).
+  for (int j = 0; j < ny; ++j) {
+    for (int i = 0; i < nx - 1; ++i) {
+      Face f;
+      f.owner = cell_index(i, j);
+      f.neighbour = cell_index(i + 1, j);
+      f.area = dy;
+      f.normal = {1.0, 0.0, 0.0};
+      f.centroid = {x0 + (i + 1) * dx, y0 + (j + 0.5) * dy, 0.0};
+      f.delta = dx;
+      mesh.faces.push_back(f);
+    }
+  }
+
+  // Internal faces normal to y (between (i,j) and (i,j+1)).
+  for (int j = 0; j < ny - 1; ++j) {
+    for (int i = 0; i < nx; ++i) {
+      Face f;
+      f.owner = cell_index(i, j);
+      f.neighbour = cell_index(i, j + 1);
+      f.area = dx;
+      f.normal = {0.0, 1.0, 0.0};
+      f.centroid = {x0 + (i + 0.5) * dx, y0 + (j + 1) * dy, 0.0};
+      f.delta = dy;
+      mesh.faces.push_back(f);
+    }
+  }
+
+  // Boundary patches: left, right, bottom, top.
+  mesh.patches.resize(4);
+  mesh.patches[0].name = "left";
+  mesh.patches[1].name = "right";
+  mesh.patches[2].name = "bottom";
+  mesh.patches[3].name = "top";
+
+  // Appends one boundary face owned by `owner` to patch `p`.
+  const auto add_boundary = [&](int p, int owner, double area, Vec3 normal,
+                                Vec3 centroid, double delta) {
+    Face f;
+    f.owner = owner;
+    f.neighbour = -1;
+    f.area = area;
+    f.normal = normal;
+    f.centroid = centroid;
+    f.delta = delta;
+    f.patch = p;
+    mesh.patches[p].faces.push_back(static_cast<int>(mesh.faces.size()));
+    mesh.faces.push_back(f);
+  };
+
+  for (int j = 0; j < ny; ++j) {
+    const double yc = y0 + (j + 0.5) * dy;
+    add_boundary(0, cell_index(0, j), dy, {-1.0, 0.0, 0.0}, {x0, yc, 0.0}, 0.5 * dx);
+    add_boundary(1, cell_index(nx - 1, j), dy, {1.0, 0.0, 0.0}, {x1, yc, 0.0}, 0.5 * dx);
+  }
+  for (int i = 0; i < nx; ++i) {
+    const double xc = x0 + (i + 0.5) * dx;
+    add_boundary(2, cell_index(i, 0), dx, {0.0, -1.0, 0.0}, {xc, y0, 0.0}, 0.5 * dy);
+    add_boundary(3, cell_index(i, ny - 1), dx, {0.0, 1.0, 0.0}, {xc, y1, 0.0}, 0.5 * dy);
+  }
+
+  return mesh;
+}
+
 }  // namespace mphys

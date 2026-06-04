@@ -65,4 +65,12 @@ struct Mesh {
 Mesh MakeMesh1D(double x0, double x1, int n_cells,
                 CoordSystem coord = CoordSystem::kCartesian);
 
+// Factory: uniform 2D Cartesian mesh over [x0, x1] x [y0, y1] with nx x ny
+// cells. Cells are stored row-major (index = j * nx + i). Produces four
+// boundary patches named "left" (x0), "right" (x1), "bottom" (y0), "top" (y1).
+// The same face-based fvm:: operators that run on a 1D mesh run on this mesh
+// unchanged.
+Mesh MakeStructuredMesh2D(double x0, double x1, int nx,
+                          double y0, double y1, int ny);
+
 }  // namespace mphys
