@@ -2,9 +2,11 @@ add_library(mphys_lib STATIC
     mphys.cpp
     solver_options.cpp
     mesh.cpp
+    topology.cpp
     state_vector.cpp
     model.cpp
     fvm_operators.cpp
+    fvm_mesh.cpp
     transient_solver.cpp
     steady_solver.cpp
 )
