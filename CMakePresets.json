@@ -35,6 +35,22 @@
                 "BUILD_TESTS": "ON",
                 "BUILD_GUI": "ON"
             }
+        },
+        {
+            "name": "mac-coverage",
+            "displayName": "macOS Coverage",
+            "inherits": "base",
+            "binaryDir": "${sourceDir}/build/mac-coverage",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_CXX_FLAGS": "-fprofile-instr-generate -fcoverage-mapping -O0 -g",
+                "CMAKE_C_FLAGS": "-fprofile-instr-generate -fcoverage-mapping -O0 -g",
+                "CMAKE_EXE_LINKER_FLAGS": "-fprofile-instr-generate",
+                "MPHYS_COVERAGE": "ON",
+                "BUILD_TESTS": "ON",
+                "BUILD_GUI": "OFF",
+                "BUILD_EXAMPLES": "OFF"
+            }
         }
     ],
     "buildPresets": [
@@ -60,6 +76,12 @@
             "displayName": "macOS Release — GUI only",
             "configurePreset": "mac-release",
             "targets": ["mphys_gui"],
+            "jobs": 8
+        },
+        {
+            "name": "mac-coverage",
+            "configurePreset": "mac-coverage",
+            "targets": ["mphys_tests"],
             "jobs": 8
         }
     ]
