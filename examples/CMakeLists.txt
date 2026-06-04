@@ -17,3 +17,8 @@ add_executable(example_single_particle_model
     single_particle_model/main.cpp
 )
 target_link_libraries(example_single_particle_model PRIVATE mphys_lib)
+
+add_executable(example_poisson_2d
+    poisson_2d/main.cpp
+)
+target_link_libraries(example_poisson_2d PRIVATE mphys_lib)
