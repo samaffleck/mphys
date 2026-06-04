@@ -1,5 +1,4 @@
 add_library(mphys_lib STATIC
-    mphys.cpp
     solver_options.cpp
     mesh.cpp
     state_vector.cpp
