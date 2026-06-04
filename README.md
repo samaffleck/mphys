@@ -1,5 +1,8 @@
 # mphys
 
+[![CI](https://github.com/samaffleck/mphys/actions/workflows/ci.yml/badge.svg)](https://github.com/samaffleck/mphys/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A C++23 finite volume library for solving 1D PDEs. Physics models are defined by subclassing `Model` and implementing a residual function; the library handles mesh generation, state management, and time integration via SUNDIALS.
 
 ## Features
@@ -66,7 +69,7 @@ simplest way to depend on it is `FetchContent`:
 include(FetchContent)
 FetchContent_Declare(
   mphys
-  GIT_REPOSITORY https://github.com/<owner>/mphys.git
+  GIT_REPOSITORY https://github.com/samaffleck/mphys.git
   GIT_TAG        v1.0.0
 )
 set(BUILD_GUI OFF)        # skip the desktop app
@@ -134,6 +137,29 @@ Spherical coordinates require only a different mesh factory call — the `Residu
 
 ```cpp
 auto mesh = mphys::MakeUniformMesh1D(1.0, 2.0, 100, mphys::CoordSystem::kSpherical);
+```
+
+## Documentation
+
+The full API reference is generated from the header comments with
+[Doxygen](https://www.doxygen.nl/):
+
+```bash
+doxygen docs/Doxyfile          # writes build/docs/html/index.html
+open build/docs/html/index.html
+```
+
+It is also published to GitHub Pages on every push to `master` (see
+`.github/workflows/docs.yml`).
+
+## Testing
+
+```bash
+cmake --build --preset mac-debug --target mphys_tests
+ctest --test-dir build/mac-debug -L mphys --output-on-failure
+
+# Analytical convergence checks against closed-form solutions
+./build/mac-debug/examples/example_validation_1d_diffusion
 ```
 
 ## Contributing
