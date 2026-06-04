@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [master]
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ----------------------------------------------------------------------------
+  linux:
+    name: Linux (GCC)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # GLFW builds from source on Linux and needs the X11/GL development headers.
+      - name: Install GUI dev headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xorg-dev libgl1-mesa-dev
+
+      - uses: lukka/get-cmake@latest   # provides recent CMake + Ninja
+
+      - name: Configure
+        run: cmake --preset linux-release
+
+      - name: Build
+        run: cmake --build --preset linux-release
+
+      - name: Test
+        run: ctest --test-dir build/linux-release --output-on-failure
+
+  # ----------------------------------------------------------------------------
+  macos:
+    name: macOS (Homebrew clang)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # The mac preset pins the Homebrew LLVM toolchain (C++23).
+      - name: Install LLVM
+        run: brew install llvm
+
+      - uses: lukka/get-cmake@latest
+
+      - name: Configure
+        run: cmake --preset mac-release
+
+      - name: Build
+        run: cmake --build --preset mac-release
+
+      - name: Test
+        run: ctest --test-dir build/mac-release --output-on-failure
+
+  # ----------------------------------------------------------------------------
+  windows:
+    name: Windows (MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Put cl.exe / the MSVC environment on PATH so the Ninja generator can find it.
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - uses: lukka/get-cmake@latest
+
+      - name: Configure
+        run: cmake --preset windows-release
+
+      - name: Build
+        run: cmake --build --preset windows-release
+
+      - name: Test
+        run: ctest --test-dir build/windows-release --output-on-failure
+
+  # ----------------------------------------------------------------------------
+  web:
+    name: Web (WebAssembly / Emscripten)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
+
+      - uses: lukka/get-cmake@latest
+
+      - name: Configure
+        run: emcmake cmake --preset web-release
+
+      - name: Build GUI
+        run: cmake --build --preset web-release-gui
+
+      - name: Check artifacts
+        run: |
+          test -f build/web-release/gui/mphys_gui.html
+          test -f build/web-release/gui/mphys_gui.wasm
+          test -f build/web-release/gui/mphys_gui.js
+          test -f build/web-release/gui/mphys_gui.data
+          echo "WebAssembly GUI artifacts produced."
+
+      - name: Upload web bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: mphys-web
+          path: |
+            build/web-release/gui/mphys_gui.html
+            build/web-release/gui/mphys_gui.js
+            build/web-release/gui/mphys_gui.wasm
+            build/web-release/gui/mphys_gui.data

@@ -1,22 +1,32 @@
 {
     "version": 6,
+    "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
     "configurePresets": [
         {
             "name": "base",
             "hidden": true,
             "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}",
             "cacheVariables": {
-                "CMAKE_C_COMPILER": "/opt/homebrew/opt/llvm/bin/clang",
-                "CMAKE_CXX_COMPILER": "/opt/homebrew/opt/llvm/bin/clang++",
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
                 "CMAKE_CXX_STANDARD": "23"
+            }
+        },
+
+        {
+            "name": "mac-base",
+            "hidden": true,
+            "inherits": "base",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "/opt/homebrew/opt/llvm/bin/clang",
+                "CMAKE_CXX_COMPILER": "/opt/homebrew/opt/llvm/bin/clang++"
             }
         },
         {
             "name": "mac-debug",
             "displayName": "macOS Debug",
-            "inherits": "base",
-            "binaryDir": "${sourceDir}/build/mac-debug",
+            "inherits": "mac-base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
                 "CMAKE_CXX_FLAGS_DEBUG": "-O0 -g3 -fno-omit-frame-pointer -fstandalone-debug",
@@ -28,39 +38,111 @@
         {
             "name": "mac-release",
             "displayName": "macOS Release",
-            "inherits": "base",
-            "binaryDir": "${sourceDir}/build/mac-release",
+            "inherits": "mac-base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
                 "BUILD_TESTS": "ON",
                 "BUILD_GUI": "ON"
             }
+        },
+
+        {
+            "name": "linux-base",
+            "hidden": true,
+            "inherits": "base",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+        },
+        {
+            "name": "linux-debug",
+            "displayName": "Linux Debug",
+            "inherits": "linux-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "BUILD_TESTS": "ON",
+                "BUILD_GUI": "ON"
+            }
+        },
+        {
+            "name": "linux-release",
+            "displayName": "Linux Release",
+            "inherits": "linux-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "BUILD_TESTS": "ON",
+                "BUILD_GUI": "ON"
+            }
+        },
+
+        {
+            "name": "windows-base",
+            "hidden": true,
+            "inherits": "base",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+        },
+        {
+            "name": "windows-debug",
+            "displayName": "Windows Debug",
+            "inherits": "windows-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "BUILD_TESTS": "ON",
+                "BUILD_GUI": "ON"
+            }
+        },
+        {
+            "name": "windows-release",
+            "displayName": "Windows Release",
+            "inherits": "windows-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "BUILD_TESTS": "ON",
+                "BUILD_GUI": "ON"
+            }
+        },
+
+        {
+            "name": "web-base",
+            "hidden": true,
+            "inherits": "base",
+            "cacheVariables": {
+                "BUILD_TESTS": "OFF",
+                "BUILD_EXAMPLES": "OFF",
+                "BUILD_GUI": "ON"
+            }
+        },
+        {
+            "name": "web-debug",
+            "displayName": "Web (WebAssembly) Debug",
+            "inherits": "web-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "web-release",
+            "displayName": "Web (WebAssembly) Release",
+            "inherits": "web-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
         }
     ],
     "buildPresets": [
-        {
-            "name": "mac-debug",
-            "configurePreset": "mac-debug",
-            "jobs": 8
-        },
-        {
-            "name": "mac-release",
-            "configurePreset": "mac-release",
-            "jobs": 8
-        },
-        {
-            "name": "mac-debug-gui",
-            "displayName": "macOS Debug — GUI only",
-            "configurePreset": "mac-debug",
-            "targets": ["mphys_gui"],
-            "jobs": 8
-        },
-        {
-            "name": "mac-release-gui",
-            "displayName": "macOS Release — GUI only",
-            "configurePreset": "mac-release",
-            "targets": ["mphys_gui"],
-            "jobs": 8
-        }
+        { "name": "mac-debug",   "configurePreset": "mac-debug",   "jobs": 8 },
+        { "name": "mac-release", "configurePreset": "mac-release", "jobs": 8 },
+        { "name": "mac-debug-gui",   "displayName": "macOS Debug — GUI only",   "configurePreset": "mac-debug",   "targets": ["mphys_gui"], "jobs": 8 },
+        { "name": "mac-release-gui", "displayName": "macOS Release — GUI only", "configurePreset": "mac-release", "targets": ["mphys_gui"], "jobs": 8 },
+
+        { "name": "linux-debug",   "configurePreset": "linux-debug",   "jobs": 8 },
+        { "name": "linux-release", "configurePreset": "linux-release", "jobs": 8 },
+        { "name": "linux-debug-gui",   "displayName": "Linux Debug — GUI only",   "configurePreset": "linux-debug",   "targets": ["mphys_gui"], "jobs": 8 },
+        { "name": "linux-release-gui", "displayName": "Linux Release — GUI only", "configurePreset": "linux-release", "targets": ["mphys_gui"], "jobs": 8 },
+
+        { "name": "windows-debug",   "configurePreset": "windows-debug",   "jobs": 8 },
+        { "name": "windows-release", "configurePreset": "windows-release", "jobs": 8 },
+
+        { "name": "web-debug",   "configurePreset": "web-debug",   "jobs": 8 },
+        { "name": "web-release", "configurePreset": "web-release", "jobs": 8 },
+        { "name": "web-release-gui", "displayName": "Web Release — GUI only", "configurePreset": "web-release", "targets": ["mphys_gui"], "jobs": 8 }
     ]
 }

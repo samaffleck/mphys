@@ -9,12 +9,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(BUILD_TESTS    "Build tests"    ON)
 option(BUILD_EXAMPLES "Build examples" ON)
 
-# Emscripten configuration
+# Emscripten / WebAssembly configuration.
+# C++ exceptions are needed by the core library; memory growth lets the heap
+# expand at runtime. We deliberately avoid -pthread so the resulting page can be
+# served from any static host (pthreads require SharedArrayBuffer + COOP/COEP).
 if(EMSCRIPTEN)
-    set(EMSCRIPTEN_FLAGS "-fexceptions" "-sNO_DISABLE_EXCEPTION_CATCHING=1" "-pthread")
-    string(JOIN " " EMSCRIPTEN_FLAGS_STR ${EMSCRIPTEN_FLAGS})
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${EMSCRIPTEN_FLAGS_STR}")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${EMSCRIPTEN_FLAGS_STR}")
+    add_compile_options(-fexceptions -sNO_DISABLE_EXCEPTION_CATCHING=1)
+    add_link_options(-fexceptions -sNO_DISABLE_EXCEPTION_CATCHING=1 -sALLOW_MEMORY_GROWTH=1)
 endif()
 
 # ============================================================
@@ -47,14 +48,18 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/external/sundials/CMakeLists.txt")
 endif()
 
 # ============================================================
-# GUI dependencies (ImGui + ImPlot, desktop only)
+# GUI dependencies (ImGui + ImPlot)
 # ============================================================
 option(BUILD_GUI "Build ImGui visualisation GUI" ON)
 
-if(BUILD_GUI AND NOT EMSCRIPTEN)
-    find_package(OpenGL REQUIRED)
-    find_package(glfw3 REQUIRED)
+# Suppress warnings in third-party GUI sources across compilers.
+if(MSVC)
+    set(MPHYS_NO_WARN_FLAG /w)
+else()
+    set(MPHYS_NO_WARN_FLAG -w)
+endif()
 
+if(BUILD_GUI)
     add_library(imgui STATIC
         external/imgui/imgui.cpp
         external/imgui/imgui_draw.cpp
@@ -67,8 +72,36 @@ if(BUILD_GUI AND NOT EMSCRIPTEN)
         external/imgui
         external/imgui/backends
     )
-    target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
-    target_compile_options(imgui PRIVATE -w)
+
+    if(EMSCRIPTEN)
+        # Use the contrib.glfw3 port (not the built-in -sUSE_GLFW=3): it has proper
+        # HiDPI / canvas-resize support that ImGui_ImplGlfw_InstallEmscriptenCallbacks
+        # relies on. WebGL2 gives us a GLES3 context for imgui_impl_opengl3.
+        # The flag is needed at compile (for headers) and link (for the JS port).
+        target_compile_options(imgui PUBLIC "--use-port=contrib.glfw3")
+        target_link_options(imgui PUBLIC "--use-port=contrib.glfw3" "-sMAX_WEBGL_VERSION=2")
+    else()
+        # Desktop: prefer a system GLFW, otherwise build the vendored submodule.
+        find_package(glfw3 QUIET)
+        if(NOT glfw3_FOUND)
+            if(EXISTS "${CMAKE_SOURCE_DIR}/external/glfw/CMakeLists.txt")
+                message(STATUS "System GLFW not found — building vendored external/glfw")
+                set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
+                set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+                set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+                set(GLFW_INSTALL        OFF CACHE BOOL "" FORCE)
+                add_subdirectory(external/glfw SYSTEM)
+            else()
+                message(FATAL_ERROR
+                    "GLFW not found and external/glfw submodule is missing.\n"
+                    "Run: git submodule update --init external/glfw")
+            endif()
+        endif()
+        find_package(OpenGL REQUIRED)
+        target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
+    endif()
+
+    target_compile_options(imgui PRIVATE ${MPHYS_NO_WARN_FLAG})
 
     add_library(implot STATIC
         external/implot/implot.cpp
@@ -76,7 +109,7 @@ if(BUILD_GUI AND NOT EMSCRIPTEN)
     )
     target_include_directories(implot PUBLIC external/implot)
     target_link_libraries(implot PUBLIC imgui)
-    target_compile_options(implot PRIVATE -w)
+    target_compile_options(implot PRIVATE ${MPHYS_NO_WARN_FLAG})
 endif()
 
 # ============================================================
@@ -94,7 +127,7 @@ endif()
 # ============================================================
 # GUI
 # ============================================================
-if(BUILD_GUI AND NOT EMSCRIPTEN)
+if(BUILD_GUI)
     add_subdirectory(gui)
 endif()
 

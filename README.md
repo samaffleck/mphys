@@ -7,44 +7,72 @@ A C++23 finite volume library for solving 1D PDEs. Physics models are defined by
 - Cell-centred FVM on 1D structured meshes — Cartesian, cylindrical, and spherical coordinates
 - Transient integration (SUNDIALS IDA) and steady-state solving (SUNDIALS KINSOL)
 - FVM operators: `Laplacian`, `Convection`, `Grad`, `Div`, `Ddt`
-- COMSOL-inspired desktop GUI with live results plotting (ImGui + ImPlot)
+- COMSOL-inspired GUI with live results plotting (ImGui + ImPlot)
+- Cross-platform: macOS, Windows, Linux desktop, and WebAssembly (in the browser)
 
 ## Requirements
 
 - CMake ≥ 3.25, Ninja
-- Clang with C++23 support (`/opt/homebrew/opt/llvm/bin/clang++`)
-- GLFW (`brew install glfw`) — GUI only
+- A C++23 compiler (Homebrew LLVM clang on macOS, GCC/Clang on Linux, MSVC/clang-cl on Windows)
+- For the web build: [Emscripten](https://emscripten.org/) (`emcc` / `emcmake` on `PATH`)
 
-All other dependencies (SUNDIALS, Google Test, ImGui, ImPlot) are included as git submodules.
+All dependencies (SUNDIALS, Google Test, ImGui, ImPlot, **GLFW**) are included as git
+submodules — no system packages are required. GLFW is built from source unless a system
+install is already present.
 
 ```bash
 git clone --recurse-submodules <url>
+# or, after a plain clone:
+git submodule update --init --recursive
 ```
 
 ## Build
 
+Presets are provided per platform (`mac`, `linux`, `windows`, `web`), each with a
+`-debug` and `-release` variant. Pick the one for your OS:
+
 ```bash
-cmake --preset mac-debug    # configure
+cmake --preset mac-debug          # configure (macOS)
 cmake --build --preset mac-debug
 
-cmake --preset mac-release
-cmake --build --preset mac-release
+cmake --preset linux-release      # Linux
+cmake --build --preset linux-release
+
+cmake --preset windows-release    # Windows (from a Developer/Ninja shell)
+cmake --build --preset windows-release
 ```
+
+To build the GUI only (faster iteration): append `-gui`, e.g. `cmake --build --preset mac-debug-gui`.
+
+### WebAssembly (browser)
+
+The web build is driven through Emscripten's `emcmake` wrapper, which injects the
+toolchain:
+
+```bash
+emcmake cmake --preset web-release
+cmake --build --preset web-release-gui
+```
+
+This produces `build/web-release/gui/mphys_gui.{html,js,wasm,data}`. Serve the folder
+over HTTP (the browser cannot load `wasm`/preloaded assets from `file://`):
+
+```bash
+cd build/web-release/gui && python3 -m http.server 8000
+# then open http://localhost:8000/mphys_gui.html
+```
+
+The GUI's native file Open/Save dialogs are compiled out on the web (the browser
+sandbox has no filesystem access); the bundled examples remain available.
 
 Targets of interest:
 
 | Target | Path |
 |--------|------|
-| `mphys_gui` | `build/mac-debug/gui/mphys_gui` |
-| `mphys_tests` | `build/mac-debug/tests/mphys_tests` |
-| `example_convection_diffusion` | `build/mac-debug/examples/...` |
-| `example_spherical_diffusion` | `build/mac-debug/examples/...` |
-
-To build the GUI only (faster iteration):
-
-```bash
-cmake --build --preset mac-debug-gui
-```
+| `mphys_gui` | `build/<preset>/gui/mphys_gui` (`.html` on web) |
+| `mphys_tests` | `build/<preset>/tests/mphys_tests` |
+| `example_convection_diffusion` | `build/<preset>/examples/...` |
+| `example_spherical_diffusion` | `build/<preset>/examples/...` |
 
 ## Defining a physics model
 

@@ -4,14 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build
 
-CMake presets are defined in `CMakePresets.json` (uses Ninja + clang from Homebrew LLVM). Both presets enable `BUILD_GUI=ON`.
+CMake presets are defined in `CMakePresets.json`, organised per platform — `mac`,
+`linux`, `windows`, `web` — each with a `-debug` and `-release` variant (plus `-gui`
+build presets for GUI-only iteration). Presets are guarded by `hostSystemName`, so only
+the ones relevant to the current OS are offered. macOS uses Homebrew LLVM clang; the
+other desktop presets use the system compiler. All desktop presets enable `BUILD_GUI=ON`.
 
 ```bash
-# Configure
+# Configure + build (macOS shown; swap mac→linux/windows as appropriate)
 cmake --preset mac-debug
 cmake --preset mac-release
-
-# Build everything
 cmake --build --preset mac-debug
 cmake --build --preset mac-release
 
@@ -19,6 +21,26 @@ cmake --build --preset mac-release
 cmake --build --preset mac-debug-gui
 cmake --build --preset mac-release-gui
 ```
+
+### WebAssembly build
+
+The web build runs through Emscripten's `emcmake` wrapper (it injects
+`CMAKE_TOOLCHAIN_FILE`, so the preset stays toolchain-agnostic and works with both
+`emsdk` and Homebrew emscripten):
+
+```bash
+emcmake cmake --preset web-release
+cmake --build --preset web-release-gui
+# → build/web-release/gui/mphys_gui.{html,js,wasm,data}; serve over HTTP to run.
+```
+
+Cross-platform notes:
+- **GLFW** is vendored as the `external/glfw` submodule and built from source unless a
+  system GLFW is found (`find_package(glfw3 QUIET)` in the top-level `CMakeLists.txt`).
+- The **web GUI** uses the Emscripten `contrib.glfw3` port + WebGL2 (GLES3); the render
+  loop is driven by `emscripten_set_main_loop_arg`, and `gui/shell.html` is the HTML
+  shell. Native file dialogs (tinyfiledialogs) and the assets path are guarded by
+  `#ifdef __EMSCRIPTEN__` (assets are preloaded into the virtual FS at `/assets`).
 
 VS Code launch configs ("mphys GUI (Debug/Release)", etc.) and matching build tasks are in `.vscode/`.
 
@@ -99,7 +121,13 @@ Dirichlet BCs are enforced via ghost cells inside the FVM operators; Neumann BCs
 
 ### GUI (`mphys_gui`)
 
-COMSOL-inspired desktop app built with Dear ImGui (docking branch) + ImPlot + GLFW/OpenGL3. Requires `BUILD_GUI=ON` and `glfw` installed via Homebrew. Physics models are defined inline in `gui/mphys_gui.cpp`; the app stores results in `AppState::result` (a `SimResult`) alongside mesh `cell_centres` for plotting. The `imgui` submodule must use the `docking` branch — the master branch lacks the docking API.
+COMSOL-inspired app built with Dear ImGui (docking branch) + ImPlot + GLFW/OpenGL3,
+running on desktop (macOS/Windows/Linux) and in the browser via WebAssembly. Requires
+`BUILD_GUI=ON`. Physics models are defined inline in `gui/mphys_gui.cpp`; the app stores
+results in `AppState::result` (a `SimResult`) alongside mesh `cell_centres` for plotting.
+The `imgui` submodule must use the `docking` branch — the master branch lacks the docking
+API. The render loop is factored into `MainLoopStep()` so the same body serves both the
+desktop `while` loop and the Emscripten `emscripten_set_main_loop_arg` callback.
 
 ## External dependencies
 
@@ -109,4 +137,8 @@ COMSOL-inspired desktop app built with Dear ImGui (docking branch) + ImPlot + GL
 | Google Test | `external/googletest` | Unit tests |
 | Dear ImGui (docking branch) | `external/imgui` | GUI rendering |
 | ImPlot | `external/implot` | Scientific plots in GUI |
-| GLFW | system (`brew install glfw`) | Window + OpenGL context |
+| GLFW | `external/glfw` submodule (or system) | Window + OpenGL context (desktop) |
+| tinyfiledialogs | `external/tinyfiledialogs` | Native file dialogs (desktop only) |
+
+On the web build, GLFW + WebGL2 come from the Emscripten `contrib.glfw3` port instead of
+the submodule; tinyfiledialogs is not compiled.
