@@ -85,6 +85,7 @@ Mesh MakeMesh1D(double x0, double x1, int n_cells, CoordSystem coord) {
     f.centroid = {x0, 0.0, 0.0};
     f.delta = mesh.cells[0].centroid[0] - x0;
     f.patch = 0;
+    f.patch_face = 0;
     mesh.patches[0].faces.push_back(static_cast<int>(mesh.faces.size()));
     mesh.faces.push_back(f);
   }
@@ -99,6 +100,7 @@ Mesh MakeMesh1D(double x0, double x1, int n_cells, CoordSystem coord) {
     f.centroid = {x1, 0.0, 0.0};
     f.delta = x1 - mesh.cells[n_cells - 1].centroid[0];
     f.patch = 1;
+    f.patch_face = 0;
     mesh.patches[1].faces.push_back(static_cast<int>(mesh.faces.size()));
     mesh.faces.push_back(f);
   }
@@ -179,6 +181,7 @@ Mesh MakeStructuredMesh2D(double x0, double x1, int nx,
     f.centroid = centroid;
     f.delta = delta;
     f.patch = p;
+    f.patch_face = static_cast<int>(mesh.patches[p].faces.size());
     mesh.patches[p].faces.push_back(static_cast<int>(mesh.faces.size()));
     mesh.faces.push_back(f);
   };

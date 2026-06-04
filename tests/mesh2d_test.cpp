@@ -62,7 +62,7 @@ TEST(Mesh2D, LaplacianExactForLinearField) {
   {
     auto u = [](double x, double /*y*/) { return 2.0 + 3.0 * x; };
     // patch order: left, right, bottom, top.
-    std::vector<mphys::BoundaryCondition> bcs = {
+    std::vector<mphys::PatchBc> bcs = {
         DirichletBc(2.0 + 3.0 * 0.0), DirichletBc(2.0 + 3.0 * 1.0),
         NeumannBc(0.0), NeumannBc(0.0)};
     const auto lap = mphys::fvm::Laplacian(Sample(mesh, u), 1.0, mesh, bcs);
@@ -72,7 +72,7 @@ TEST(Mesh2D, LaplacianExactForLinearField) {
   // u = 1 - 0.7y : constant on bottom/top (Dirichlet), zero x-gradient (Neumann 0).
   {
     auto u = [](double /*x*/, double y) { return 1.0 - 0.7 * y; };
-    std::vector<mphys::BoundaryCondition> bcs = {
+    std::vector<mphys::PatchBc> bcs = {
         NeumannBc(0.0), NeumannBc(0.0),
         DirichletBc(1.0 - 0.7 * 0.0), DirichletBc(1.0 - 0.7 * 1.0)};
     const auto lap = mphys::fvm::Laplacian(Sample(mesh, u), 1.0, mesh, bcs);
@@ -89,7 +89,7 @@ TEST(Mesh2D, LaplacianSecondOrderConvergence) {
   auto lap_exact = [&](double x, double y) { return -2.0 * pi * pi * u(x, y); };
 
   // All four edges are zero -> Dirichlet 0 everywhere (constant per patch).
-  std::vector<mphys::BoundaryCondition> bcs = {
+  std::vector<mphys::PatchBc> bcs = {
       DirichletBc(0.0), DirichletBc(0.0), DirichletBc(0.0), DirichletBc(0.0)};
 
   double prev_err = 0.0, prev_h = 0.0;
@@ -114,4 +114,43 @@ TEST(Mesh2D, LaplacianSecondOrderConvergence) {
 
   // Expect ~2nd order; allow a little slack for boundary truncation.
   EXPECT_GT(last_rate, 1.9) << "observed convergence rate " << last_rate;
+}
+
+// Per-face Dirichlet BCs let a fully 2D-varying boundary be represented exactly.
+// A field linear in both x and y has zero Laplacian; with per-face boundary
+// values sampled from the exact field, the discrete operator must return ~0 —
+// something a single constant value per patch could not achieve.
+TEST(Mesh2D, PerFaceDirichletExactForBilinearField) {
+  const mphys::Mesh mesh = mphys::MakeStructuredMesh2D(0.0, 1.0, 10, 0.0, 1.0, 14);
+  auto u = [](double x, double y) { return 2.0 + 3.0 * x + 4.0 * y; };
+
+  std::vector<mphys::PatchBc> bcs;
+  for (int p = 0; p < 4; ++p) {
+    bcs.push_back(mphys::fvm::MakePatchBc(
+        mphys::BcType::kDirichlet, mesh, p,
+        [&](const mphys::Vec3& c) { return u(c[0], c[1]); }));
+  }
+
+  const auto lap = mphys::fvm::Laplacian(Sample(mesh, u), 1.0, mesh, bcs);
+  EXPECT_LT(MaxAbs(lap), 1e-10);
+}
+
+// A per-face diffusivity that is uniform must reproduce the uniform-D overload.
+TEST(Mesh2D, VariableDiffusivityMatchesUniform) {
+  constexpr double D = 2.3;
+  const mphys::Mesh mesh = mphys::MakeStructuredMesh2D(0.0, 1.0, 8, 0.0, 1.0, 8);
+  auto u = [](double x, double y) { return std::sin(2.0 * x) * (1.0 + y); };
+  const auto phi = Sample(mesh, u);
+
+  std::vector<mphys::PatchBc> bcs = {DirichletBc(0.0), DirichletBc(0.0),
+                                     DirichletBc(0.0), DirichletBc(0.0)};
+  const std::vector<double> D_face(mesh.NFaces(), D);
+
+  const auto uniform = mphys::fvm::Laplacian(phi, D, mesh, bcs);
+  const auto variable = mphys::fvm::Laplacian(phi, D_face, mesh, bcs);
+
+  ASSERT_EQ(uniform.size(), variable.size());
+  for (size_t i = 0; i < uniform.size(); ++i) {
+    EXPECT_NEAR(variable[i], uniform[i], 1e-12) << "cell " << i;
+  }
 }

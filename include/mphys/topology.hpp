@@ -35,7 +35,8 @@ struct Face {
   Vec3 normal{0.0, 0.0, 0.0};
   Vec3 centroid{0.0, 0.0, 0.0};
   double delta = 0.0;
-  int patch = -1;  // index into Mesh::patches, or -1 for an internal face
+  int patch = -1;       // index into Mesh::patches, or -1 for an internal face
+  int patch_face = -1;  // index of this face within its patch (for per-face BCs)
 };
 
 // A named group of boundary faces (e.g. "left", "right"). Boundary conditions
