@@ -1,0 +1,85 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "mphys GUI (Debug)",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/mac-debug/gui/mphys_gui",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "CMake: Build GUI (Debug)",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "mphys GUI (Release)",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/mac-release/gui/mphys_gui",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "CMake: Build GUI (Release)",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "mphys (Debug)",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/mac-debug/src/mphys",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "CMake: Build (Debug)",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "mphys (Release)",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/mac-release/src/mphys",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "CMake: Build (Release)",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Tests (Debug)",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/mac-debug/tests/mphys_tests",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "CMake: Build (Debug)",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Tests (Release)",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/mac-release/tests/mphys_tests",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "CMake: Build (Release)",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Example: Convection-Diffusion (Debug)",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/mac-debug/examples/example_convection_diffusion",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "CMake: Build (Debug)",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Example: Validation 1D Diffusion (Debug)",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/mac-debug/examples/example_validation_1d_diffusion",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "CMake: Build (Debug)",
+            "console": "integratedTerminal"
+        }
+    ]
+}
