@@ -9,6 +9,7 @@
 #include <sundials/sundials_linearsolver.h>
 #include <sundials/sundials_matrix.h>
 #include <sunlinsol/sunlinsol_band.h>
+#include <sunlinsol/sunlinsol_spgmr.h>
 #include <sunmatrix/sunmatrix_band.h>
 
 namespace mphys {
@@ -80,6 +81,10 @@ struct SunLinearSolver {
   SunLinearSolver() = default;
   SunLinearSolver(N_Vector y, SUNMatrix a, SUNContext ctx)
       : ls(SUNLinSol_Band(y, a, ctx)) {}
+  // Matrix-free Krylov solver (GMRES). pretype is a SUN_PREC_* constant; maxl
+  // is the maximum Krylov subspace dimension.
+  SunLinearSolver(N_Vector y, int pretype, int maxl, SUNContext ctx)
+      : ls(SUNLinSol_SPGMR(y, pretype, maxl, ctx)) {}
   ~SunLinearSolver() {
     if (ls) SUNLinSolFree(ls);
   }

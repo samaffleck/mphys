@@ -7,6 +7,8 @@ add_library(mphys_lib STATIC
     model.cpp
     fvm_operators.cpp
     fvm_mesh.cpp
+    mesh_model.cpp
+    mesh_steady_solver.cpp
     transient_solver.cpp
     steady_solver.cpp
 )

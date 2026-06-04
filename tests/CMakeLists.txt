@@ -3,6 +3,7 @@ add_executable(mphys_tests
     topology_test.cpp
     fvm_mesh_test.cpp
     mesh2d_test.cpp
+    mesh_solve_test.cpp
 )
 
 target_link_libraries(mphys_tests
