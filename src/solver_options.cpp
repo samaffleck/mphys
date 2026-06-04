@@ -4,9 +4,7 @@
  *
  * This file is part of MPhys, an open source C++ library for multiphysics simulations.
  *
- * License: For academic and non-commercial use only.
- *
- * See the project README for more details.
+ * License: MIT. See the LICENSE file at the project root for details.
  */
 #include <cassert>
 #include "mphys/solver_options.hpp"

@@ -2,14 +2,22 @@
     "version": 6,
     "configurePresets": [
         {
-            "name": "base",
+            "name": "base-common",
             "hidden": true,
             "generator": "Ninja",
             "cacheVariables": {
-                "CMAKE_C_COMPILER": "/opt/homebrew/opt/llvm/bin/clang",
-                "CMAKE_CXX_COMPILER": "/opt/homebrew/opt/llvm/bin/clang++",
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
                 "CMAKE_CXX_STANDARD": "23"
+            }
+        },
+        {
+            "name": "base",
+            "hidden": true,
+            "inherits": "base-common",
+            "description": "macOS toolchain (Homebrew LLVM clang with C++23 support)",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "/opt/homebrew/opt/llvm/bin/clang",
+                "CMAKE_CXX_COMPILER": "/opt/homebrew/opt/llvm/bin/clang++"
             }
         },
         {
@@ -51,6 +59,30 @@
                 "BUILD_GUI": "OFF",
                 "BUILD_EXAMPLES": "OFF"
             }
+        },
+        {
+            "name": "linux-debug",
+            "displayName": "Linux Debug",
+            "inherits": "base-common",
+            "description": "Uses the default system compiler from PATH (GCC 14+ or Clang 18+ for C++23 <print> support)",
+            "binaryDir": "${sourceDir}/build/linux-debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "BUILD_TESTS": "ON",
+                "BUILD_GUI": "OFF"
+            }
+        },
+        {
+            "name": "linux-release",
+            "displayName": "Linux Release",
+            "inherits": "base-common",
+            "description": "Uses the default system compiler from PATH (GCC 14+ or Clang 18+ for C++23 <print> support)",
+            "binaryDir": "${sourceDir}/build/linux-release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "BUILD_TESTS": "ON",
+                "BUILD_GUI": "OFF"
+            }
         }
     ],
     "buildPresets": [
@@ -82,6 +114,16 @@
             "name": "mac-coverage",
             "configurePreset": "mac-coverage",
             "targets": ["mphys_tests"],
+            "jobs": 8
+        },
+        {
+            "name": "linux-debug",
+            "configurePreset": "linux-debug",
+            "jobs": 8
+        },
+        {
+            "name": "linux-release",
+            "configurePreset": "linux-release",
             "jobs": 8
         }
     ]
