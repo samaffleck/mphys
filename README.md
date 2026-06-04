@@ -1,7 +1,11 @@
-# mphys
+<p align="center">
+  <img src="assets/logo.svg" alt="mphys" width="540">
+</p>
 
-[![CI](https://github.com/samaffleck/mphys/actions/workflows/ci.yml/badge.svg)](https://github.com/samaffleck/mphys/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+<p align="center">
+  <a href="https://github.com/samaffleck/mphys/actions/workflows/ci.yml"><img src="https://github.com/samaffleck/mphys/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+</p>
 
 A C++23 finite volume library for solving 1D PDEs. Physics models are defined by subclassing `Model` and implementing a residual function; the library handles mesh generation, state management, and time integration via SUNDIALS.
 
