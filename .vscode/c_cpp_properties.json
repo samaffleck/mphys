@@ -1,0 +1,21 @@
+{
+    "configurations": [
+        {
+            "name": "Mac",
+            "compilerPath": "/opt/homebrew/opt/llvm/bin/clang++",
+            "cStandard": "c17",
+            "cppStandard": "c++23",
+            "intelliSenseMode": "macos-clang-arm64",
+            "configurationProvider": "ms-vscode.cmake-tools",
+            "includePath": [
+                "${workspaceFolder}/external/imgui",
+                "${workspaceFolder}/external/imgui/backends",
+                "${workspaceFolder}/external/implot",
+                "${workspaceFolder}/external/sundials/include",
+                "${workspaceFolder}/build/mac-debug/external/sundials/include",
+                "${workspaceFolder}/include"
+            ]
+        }
+    ],
+    "version": 4
+}
