@@ -1,0 +1,42 @@
+name: Docs
+
+# Builds the Doxygen API reference and publishes it to GitHub Pages.
+# Requires Pages to be enabled once in the repo: Settings -> Pages ->
+# "Build and deployment" -> Source: "GitHub Actions".
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Only the public headers and Markdown files are parsed, so submodules
+      # are not needed here.
+      - name: Install Doxygen
+        run: sudo apt-get update && sudo apt-get install -y doxygen graphviz
+
+      - name: Build docs
+        run: doxygen docs/Doxyfile
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/docs/html
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

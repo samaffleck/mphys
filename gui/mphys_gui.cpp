@@ -25,6 +25,7 @@
 #include "mphys/fvm_operators.hpp"
 #include "mphys/mesh.hpp"
 #include "mphys/model.hpp"
+#include "mphys/models/spm.hpp"
 #include "mphys/sim_result.hpp"
 #include "mphys/solver_options.hpp"
 #include "mphys/state_vector.hpp"
@@ -345,7 +346,45 @@ struct Geometry1D {
 };
 
 enum class NavNode { Geometry, Physics, Mesh, Study, Results };
-enum class PhysicsModule { ConvectionDiffusion, SteadyDiffusion, DarcyPackedBed };
+enum class PhysicsModule { ConvectionDiffusion, SteadyDiffusion, DarcyPackedBed,
+                           SingleParticle };
+
+// User-facing Single Particle Model inputs (floats for ImGui widgets).
+// Defaults are representative LG M50 (Chen 2020) values.
+struct SpmInputs {
+  // Geometry
+  float R_n = 5.86e-6f, R_p = 5.22e-6f;   // particle radii          [m]
+  float L_n = 85.2e-6f, L_p = 75.6e-6f;   // electrode thicknesses   [m]
+  float A   = 0.1027f;                     // electrode area          [m²]
+  float eps_n = 0.75f, eps_p = 0.665f;     // active-material fraction [-]
+  // Transport
+  float D_n = 3.3e-14f, D_p = 4.0e-15f;    // solid diffusivities     [m²/s]
+  // Concentrations
+  float cn_max = 33133.0f, cp_max = 63104.0f;  // max concentrations  [mol/m³]
+  float x0 = 0.84f, y0 = 0.27f;            // initial stoichiometries [-]
+  float c_e = 1000.0f;                      // electrolyte conc.      [mol/m³]
+  // Kinetics
+  float k_n = 6.48e-7f, k_p = 3.42e-6f;    // reaction rate constants
+  // Operating
+  float I = 5.0f, T = 298.15f;             // current [A], temperature [K]
+  int   n_cells = 30;                       // mesh points per particle
+};
+
+static mphys::models::SpmParameters ToSpmParameters(const SpmInputs& in) {
+  mphys::models::SpmParameters p;
+  p.R_n = in.R_n;     p.R_p = in.R_p;
+  p.L_n = in.L_n;     p.L_p = in.L_p;
+  p.A   = in.A;
+  p.eps_n = in.eps_n; p.eps_p = in.eps_p;
+  p.D_n = in.D_n;     p.D_p = in.D_p;
+  p.cn_max = in.cn_max; p.cp_max = in.cp_max;
+  p.cn0 = in.x0 * in.cn_max;
+  p.cp0 = in.y0 * in.cp_max;
+  p.c_e = in.c_e;
+  p.k_n = in.k_n;     p.k_p = in.k_p;
+  p.I = in.I;         p.T = in.T;
+  return p;
+}
 
 struct AppState {
   NavNode       nav     = NavNode::Geometry;
@@ -375,6 +414,10 @@ struct AppState {
   float dt_snapshot  = 1.0f;   // interval at which snapshots are recorded
   float rel_tol      = 1e-6f;
   float abs_tol      = 1e-8f;
+
+  SpmInputs            spm;
+  std::vector<double>  spm_time;        // voltage-curve time axis [s]
+  std::vector<double>  spm_voltage;     // terminal voltage        [V]
 
   mphys::SimResult     result;
   std::vector<double>  cell_centres;
@@ -489,11 +532,64 @@ static mphys::Mesh1D BuildCompositeMesh(const Geometry1D& geo, mphys::CoordSyste
 // Simulation runner
 // ============================================================
 
+// Single Particle Model: two normalised spherical particles + voltage output.
+static void RunSpm(AppState& s) {
+  try {
+    auto p = ToSpmParameters(s.spm);
+    int nc = std::max(2, s.spm.n_cells);
+
+    auto mesh = mphys::MakeUniformMesh1D(0.0, 1.0, nc,
+                                         mphys::CoordSystem::kSpherical);
+    s.cell_centres = mesh.cell_centres;   // normalised radius r/R ∈ [0,1]
+
+    mphys::StateVector sv(mesh.n_cells);
+    mphys::models::SpmModel model(mesh, sv, p);
+
+    mphys::SolverOptions opts;
+    opts.tolerance.relative = static_cast<double>(s.rel_tol);
+    opts.tolerance.absolute = static_cast<double>(s.abs_tol);
+    opts.initial_time_step  = static_cast<double>(s.dt_initial);
+    opts.maximum_time_step  = static_cast<double>(s.dt_max);
+
+    double dt_snap = std::max(static_cast<double>(s.dt_snapshot),
+                              static_cast<double>(s.dt_max));
+
+    mphys::SunContext sunctx;
+    mphys::TransientSolver solver(model, opts, sunctx);
+    double next_snap = 0.0;
+    std::string warn = solver.Solve(0.0, static_cast<double>(s.t_end),
+        [&](double t, const std::vector<mphys::Field>& f,
+            const std::vector<double>& a) {
+          if (t >= next_snap - 1e-12) {
+            s.result.Record(t, f, a);
+            s.spm_time.push_back(t);
+            s.spm_voltage.push_back(a[model.voltage_index()]);
+            next_snap += dt_snap;
+          }
+        });
+
+    if (!s.result.snapshots.empty()) {
+      s.plot_time   = static_cast<float>(s.result.snapshots.back().t);
+      s.has_results = true;
+      s.nav         = NavNode::Results;
+    }
+    s.status_msg = warn.empty()
+        ? "Done — " + std::to_string(s.result.snapshots.size()) + " snapshots"
+        : "Warning: " + warn;
+  } catch (const std::exception& e) {
+    s.status_msg = std::string("Error: ") + e.what();
+  }
+}
+
 static void RunSimulation(AppState& s) {
   s.has_results = false;
   s.result.snapshots.clear();
   s.cell_centres.clear();
+  s.spm_time.clear();
+  s.spm_voltage.clear();
   s.status_msg = "Running...";
+
+  if (s.physics == PhysicsModule::SingleParticle) { RunSpm(s); return; }
 
   try {
     if (!s.geo.built || s.geo.domains.empty())
@@ -645,6 +741,20 @@ template<class Ar> void serialize(Ar& ar, Geometry1D& v) {
      cereal::make_nvp("built",   v.built));
 }
 
+template<class Ar> void serialize(Ar& ar, SpmInputs& v) {
+  ar(cereal::make_nvp("R_n", v.R_n), cereal::make_nvp("R_p", v.R_p),
+     cereal::make_nvp("L_n", v.L_n), cereal::make_nvp("L_p", v.L_p),
+     cereal::make_nvp("A", v.A),
+     cereal::make_nvp("eps_n", v.eps_n), cereal::make_nvp("eps_p", v.eps_p),
+     cereal::make_nvp("D_n", v.D_n), cereal::make_nvp("D_p", v.D_p),
+     cereal::make_nvp("cn_max", v.cn_max), cereal::make_nvp("cp_max", v.cp_max),
+     cereal::make_nvp("x0", v.x0), cereal::make_nvp("y0", v.y0),
+     cereal::make_nvp("c_e", v.c_e),
+     cereal::make_nvp("k_n", v.k_n), cereal::make_nvp("k_p", v.k_p),
+     cereal::make_nvp("I", v.I), cereal::make_nvp("T", v.T),
+     cereal::make_nvp("n_cells", v.n_cells));
+}
+
 // Split save/load for AppState so enums round-trip cleanly as ints.
 template<class Ar> void save(Ar& ar, const AppState& v) {
   ar(cereal::make_nvp("physics",        static_cast<int>(v.physics)),
@@ -657,6 +767,7 @@ template<class Ar> void save(Ar& ar, const AppState& v) {
      cereal::make_nvp("right_bc",       v.right_bc),
      cereal::make_nvp("pb_left_bc",     v.pb_left_bc),
      cereal::make_nvp("pb_right_bc",    v.pb_right_bc),
+     cereal::make_nvp("spm",            v.spm),
      cereal::make_nvp("t_end",          v.t_end),
      cereal::make_nvp("dt_initial",     v.dt_initial),
      cereal::make_nvp("dt_max",         v.dt_max),
@@ -678,6 +789,7 @@ template<class Ar> void load(Ar& ar, AppState& v) {
      cereal::make_nvp("right_bc",       v.right_bc),
      cereal::make_nvp("pb_left_bc",     v.pb_left_bc),
      cereal::make_nvp("pb_right_bc",    v.pb_right_bc),
+     cereal::make_nvp("spm",            v.spm),
      cereal::make_nvp("t_end",          v.t_end),
      cereal::make_nvp("dt_initial",     v.dt_initial),
      cereal::make_nvp("dt_max",         v.dt_max),
@@ -740,6 +852,19 @@ static void ApplyNodesToLengths(AppState& s) {
 static void ShowGeometryPanel(AppState& s) {
   static constexpr const char* kUnits[] = {"m", "cm", "mm", "\xc2\xb5m"};
   Geometry1D& geo = s.geo;
+
+  if (s.physics == PhysicsModule::SingleParticle) {
+    ImGui::SeparatorText("Single Particle Model");
+    ImGui::Spacing();
+    ImGui::TextWrapped(
+        "The SPM builds its own geometry: two spherical particles on a "
+        "normalised radius r/R in [0,1]. No domain setup is required.");
+    ImGui::Spacing();
+    ImGui::BulletText("Set particle sizes & materials in the Physics node.");
+    ImGui::BulletText("Set radial resolution in the Mesh node.");
+    ImGui::BulletText("Set current & end time in the Study node, then Run.");
+    return;
+  }
 
   ImGui::SeparatorText("Coordinate System");
   ImGui::Spacing();
@@ -939,6 +1064,44 @@ static void ShowGeometryView(AppState& s) {
   float       cw   = ImGui::GetWindowWidth();
   float       ch   = ImGui::GetWindowHeight();
 
+  if (s.physics == PhysicsModule::SingleParticle) {
+    // Schematic of the two representative particles, sized by relative radius.
+    float cy   = orig.y + ch * 0.5f;
+    float rmax = std::max(s.spm.R_n, s.spm.R_p);
+    if (rmax <= 0.0f) rmax = 1.0f;
+    float base = std::min(cw, ch) * 0.18f;
+    float rn   = base * (s.spm.R_n / rmax);
+    float rp   = base * (s.spm.R_p / rmax);
+    float cxn  = orig.x + cw * 0.33f;
+    float cxp  = orig.x + cw * 0.67f;
+
+    auto draw_particle = [&](float cx, float r, ImU32 col, const char* tag,
+                             float radius_m) {
+      for (int k = 4; k >= 1; --k) {  // concentric shells → diffusion hint
+        float rr = r * k / 4.0f;
+        dl->AddCircle(ImVec2(cx, cy), rr,
+                      IM_COL32(((col >> 0) & 0xFF), ((col >> 8) & 0xFF),
+                               ((col >> 16) & 0xFF), 60), 0, 1.0f);
+      }
+      dl->AddCircle(ImVec2(cx, cy), r, col, 0, 2.5f);
+      dl->AddCircleFilled(ImVec2(cx, cy), 2.5f, col);
+      char lbl[64];
+      snprintf(lbl, sizeof(lbl), "%s   R = %.3g m", tag, (double)radius_m);
+      ImVec2 ts = ImGui::CalcTextSize(lbl);
+      dl->AddText(ImVec2(cx - ts.x * 0.5f, cy + r + 10.0f),
+                  IM_COL32(190, 205, 230, 220), lbl);
+    };
+
+    draw_particle(cxn, rn, IM_COL32(120, 185, 255, 255), "Negative", s.spm.R_n);
+    draw_particle(cxp, rp, IM_COL32(255, 170, 90, 255), "Positive", s.spm.R_p);
+
+    const char* title = "Single Particle Model";
+    ImVec2 tts = ImGui::CalcTextSize(title);
+    dl->AddText(ImVec2(orig.x + (cw - tts.x) * 0.5f, orig.y + 16.0f),
+                IM_COL32(150, 170, 200, 200), title);
+    return;
+  }
+
   if (!geo.built || (int)geo.nodes.size() < 2) {
     const char* msg = "Configure geometry and press  Build";
     ImVec2 ts = ImGui::CalcTextSize(msg);
@@ -1073,23 +1236,98 @@ static void ShowGeometryView(AppState& s) {
 // Configuration panels
 // ============================================================
 
+// Single Particle Model parameter editor.  Grouped by physical role; every
+// field is editable as a number or an expression (e.g. "5e-6", "0.84*33133").
+static void ShowSpmPhysics(AppState& s) {
+  SpmInputs& m = s.spm;
+
+  ImGui::TextDisabled("Each electrode is one spherical particle (PyBaMM SPM).");
+  ImGui::Spacing();
+
+  ImGui::SeparatorText("Particle Geometry");
+  ImGui::Spacing();
+  LabeledFloat("Negative radius  R_n", "##Rn", &m.R_n, "m", "%.4g");
+  ImGui::Spacing();
+  LabeledFloat("Positive radius  R_p", "##Rp", &m.R_p, "m", "%.4g");
+  ImGui::Spacing();
+  LabeledFloat("Negative thickness  L_n", "##Ln", &m.L_n, "m", "%.4g");
+  ImGui::Spacing();
+  LabeledFloat("Positive thickness  L_p", "##Lp", &m.L_p, "m", "%.4g");
+  ImGui::Spacing();
+  LabeledFloat("Electrode area  A", "##area", &m.A, "m\xc2\xb2", "%.4g");
+  ImGui::Spacing();
+  LabeledFloat("Neg. active fraction", "##epsn", &m.eps_n, nullptr, "%.4g");
+  ImGui::Spacing();
+  LabeledFloat("Pos. active fraction", "##epsp", &m.eps_p, nullptr, "%.4g");
+
+  ImGui::Spacing();
+  ImGui::SeparatorText("Solid Diffusivity");
+  ImGui::Spacing();
+  LabeledFloat("Negative  D_n", "##Dn", &m.D_n, "m\xc2\xb2/s", "%.3e");
+  ImGui::Spacing();
+  LabeledFloat("Positive  D_p", "##Dp", &m.D_p, "m\xc2\xb2/s", "%.3e");
+
+  ImGui::Spacing();
+  ImGui::SeparatorText("Concentrations");
+  ImGui::Spacing();
+  LabeledFloat("Neg. max  c_n,max", "##cnmax", &m.cn_max, "mol/m\xc2\xb3", "%.5g");
+  ImGui::Spacing();
+  LabeledFloat("Pos. max  c_p,max", "##cpmax", &m.cp_max, "mol/m\xc2\xb3", "%.5g");
+  ImGui::Spacing();
+  LabeledFloat("Initial neg. stoich.  x0", "##x0", &m.x0, nullptr, "%.4g");
+  if (m.x0 < 0.0f) m.x0 = 0.0f; if (m.x0 > 1.0f) m.x0 = 1.0f;
+  ImGui::Spacing();
+  LabeledFloat("Initial pos. stoich.  y0", "##y0", &m.y0, nullptr, "%.4g");
+  if (m.y0 < 0.0f) m.y0 = 0.0f; if (m.y0 > 1.0f) m.y0 = 1.0f;
+  ImGui::Spacing();
+  LabeledFloat("Electrolyte conc.  c_e", "##ce", &m.c_e, "mol/m\xc2\xb3", "%.5g");
+
+  ImGui::Spacing();
+  ImGui::SeparatorText("Kinetics");
+  ImGui::Spacing();
+  LabeledFloat("Neg. rate constant  k_n", "##kn", &m.k_n, nullptr, "%.3e");
+  ImGui::Spacing();
+  LabeledFloat("Pos. rate constant  k_p", "##kp", &m.k_p, nullptr, "%.3e");
+
+  ImGui::Spacing();
+  ImGui::SeparatorText("Operating Conditions");
+  ImGui::Spacing();
+  LabeledFloat("Applied current  I", "##cur", &m.I, "A", "%.4g");
+  ImGui::SameLine();
+  ImGui::TextDisabled("(discharge +)");
+  ImGui::Spacing();
+  LabeledFloat("Temperature  T", "##temp", &m.T, "K", "%.5g");
+}
+
 static void ShowPhysicsPanel(AppState& s) {
   static constexpr const char* kMods[] = {
       "Convection-Diffusion-Reaction",
       "Steady Diffusion",
-      "Darcy Packed Bed"
+      "Darcy Packed Bed",
+      "Single Particle Model"
   };
   bool is_darcy     = (s.physics == PhysicsModule::DarcyPackedBed);
+  bool is_spm       = (s.physics == PhysicsModule::SingleParticle);
   bool is_transient = (s.physics == PhysicsModule::ConvectionDiffusion || is_darcy);
 
   ImGui::SeparatorText("Physics Module");
   ImGui::Spacing();
   int sel = static_cast<int>(s.physics);
   ImGui::SetNextItemWidth(-1.0f);
-  if (ImGui::Combo("##phys", &sel, kMods, 3))
+  if (ImGui::Combo("##phys", &sel, kMods, 4)) {
+    PhysicsModule prev = s.physics;
     s.physics = static_cast<PhysicsModule>(sel);
+    // First switch into SPM: seed discharge-friendly time settings.
+    if (s.physics == PhysicsModule::SingleParticle &&
+        prev != PhysicsModule::SingleParticle) {
+      s.t_end = 3600.0f; s.dt_max = 20.0f; s.dt_snapshot = 20.0f;
+      is_spm = true;
+    }
+  }
 
   ImGui::Spacing();
+
+  if (is_spm) { ShowSpmPhysics(s); return; }
 
   if (!s.geo.built || s.geo.domains.empty()) {
     ImGui::TextDisabled("Build the geometry to configure physics parameters.");
@@ -1186,6 +1424,17 @@ static void ShowPhysicsPanel(AppState& s) {
 static void ShowMeshPanel(AppState& s) {
   ImGui::SeparatorText("Discretisation");
   ImGui::Spacing();
+
+  if (s.physics == PhysicsModule::SingleParticle) {
+    ImGui::TextDisabled("Radial points per particle (r/R in [0,1]).");
+    ImGui::Spacing();
+    LabeledInt("Cells per particle", "##spmnc", &s.spm.n_cells);
+    if (s.spm.n_cells < 2) s.spm.n_cells = 2;
+    ImGui::Spacing();
+    ImGui::Text("Total unknowns: %d  (2 particles + voltage)",
+                2 * s.spm.n_cells + 1);
+    return;
+  }
 
   if (!s.geo.built || s.geo.domains.empty()) {
     ImGui::TextDisabled("Build the geometry first (Geometry -> Build).");
@@ -1298,6 +1547,41 @@ static void ShowResultsPanel(AppState& s) {
     return;
   }
 
+  const bool is_spm = (s.physics == PhysicsModule::SingleParticle);
+
+  // SPM: terminal voltage vs time, with a marker at the selected instant.
+  if (is_spm && !s.spm_voltage.empty()) {
+    ImGui::SeparatorText("Terminal Voltage");
+    ImGui::Spacing();
+    int nv = static_cast<int>(s.spm_voltage.size());
+    double v_now = s.spm_voltage.back();
+    {
+      // Nearest voltage sample to the current plot time.
+      int best = nv - 1; double bd = 1e300;
+      for (int i = 0; i < nv; ++i) {
+        double d = std::abs(s.spm_time[i] - (double)s.plot_time);
+        if (d < bd) { bd = d; best = i; }
+      }
+      v_now = s.spm_voltage[best];
+    }
+    ImGui::Text("V(t = %.4g s) = %.4f V", (double)s.plot_time, v_now);
+    ImGui::Spacing();
+
+    ImVec2 vsz = ImGui::GetContentRegionAvail();
+    vsz.y *= 0.42f;
+    if (ImPlot::BeginPlot("##spm_voltage", vsz)) {
+      ImPlot::SetupAxes("t  [s]", "V  [V]",
+                        ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+      ImPlot::PlotLine("V", s.spm_time.data(), s.spm_voltage.data(), nv);
+      double tx = (double)s.plot_time, vy = v_now;
+      ImPlot::PlotScatter("##now", &tx, &vy, 1);
+      ImPlot::EndPlot();
+    }
+    ImGui::Spacing();
+    ImGui::SeparatorText("Particle Concentration");
+    ImGui::Spacing();
+  }
+
   const auto& snaps   = s.result.snapshots;
   int         n_snaps = static_cast<int>(snaps.size());
   bool        transient = n_snaps > 1;
@@ -1362,7 +1646,7 @@ static void ShowResultsPanel(AppState& s) {
   plot_size.y -= 4.0f;
 
   if (ImPlot::BeginPlot("##results", plot_size)) {
-    ImPlot::SetupAxes("x  [m]", fname.c_str(),
+    ImPlot::SetupAxes(is_spm ? "r / R  [-]" : "x  [m]", fname.c_str(),
                       ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
     ImPlot::PlotLine(fname.c_str(),
         s.cell_centres.data(), plot_vals.data(), n_cells);
@@ -1465,6 +1749,7 @@ static void RenderFrame(AppState& s) {
         // Add new entries here when new example JSON files are added to assets/examples/.
         static const char* kExamples[] = {
             "darcy_packed_bed.json",
+            "single_particle_model.json",
         };
         for (const char* ex : kExamples) {
           if (ImGui::MenuItem(ex)) {

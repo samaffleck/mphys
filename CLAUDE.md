@@ -49,11 +49,36 @@ VS Code launch configs ("mphys GUI (Debug/Release)", etc.) and matching build ta
 ```bash
 # Build and run all tests
 cmake --build build/mac-debug --target mphys_tests -j8
-cd build/mac-debug && ctest --output-on-failure
+cd build/mac-debug && ctest -L mphys --output-on-failure   # -L mphys excludes SUNDIALS' own tests
+
+# Or run the gtest binary directly (faster, full gtest output)
+./build/mac-debug/tests/mphys_tests
 
 # Run the validation suite (analytical convergence checks — more informative than gtest)
 ./build/mac-debug/examples/example_validation_1d_diffusion
 ```
+
+Unit tests live in `tests/test_<unit>.cpp` (one file per translation unit:
+mesh, field, boundary_condition, state_vector, fvm_operators, model,
+solver_options, sundials_types). Integration tests that drive the full solvers
+against analytical solutions are in `tests/test_integration_{steady,transient}.cpp`.
+All mphys tests carry the ctest label `mphys`.
+
+### Coverage
+
+LLVM source-based coverage of `mphys_lib` (only `src/` and `include/mphys/` are
+reported; external deps and test sources are excluded).
+
+```bash
+./scripts/coverage.sh            # build, run tests, print summary, open HTML report
+./scripts/coverage.sh --no-open  # same, without opening the browser
+```
+
+Uses the `mac-coverage` CMake preset (`-fprofile-instr-generate
+-fcoverage-mapping`). The build force-loads `mphys_lib` into the test binary
+(`MPHYS_COVERAGE=ON`) so untested library code still counts against the total
+instead of being dead-stripped by the linker. HTML report lands at
+`build/mac-coverage/coverage/html/index.html`.
 
 ## Run
 

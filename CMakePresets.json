@@ -3,7 +3,7 @@
     "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
     "configurePresets": [
         {
-            "name": "base",
+            "name": "base-common",
             "hidden": true,
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/build/${presetName}",
@@ -12,11 +12,11 @@
                 "CMAKE_CXX_STANDARD": "23"
             }
         },
-
         {
-            "name": "mac-base",
+            "name": "base",
             "hidden": true,
-            "inherits": "base",
+            "inherits": "base-common",
+            "description": "macOS toolchain (Homebrew LLVM clang with C++23 support)",
             "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
             "cacheVariables": {
                 "CMAKE_C_COMPILER": "/opt/homebrew/opt/llvm/bin/clang",
@@ -26,7 +26,7 @@
         {
             "name": "mac-debug",
             "displayName": "macOS Debug",
-            "inherits": "mac-base",
+            "inherits": "base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
                 "CMAKE_CXX_FLAGS_DEBUG": "-O0 -g3 -fno-omit-frame-pointer -fstandalone-debug",
@@ -38,18 +38,34 @@
         {
             "name": "mac-release",
             "displayName": "macOS Release",
-            "inherits": "mac-base",
+            "inherits": "base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
                 "BUILD_TESTS": "ON",
                 "BUILD_GUI": "ON"
             }
         },
+        {
+            "name": "mac-coverage",
+            "displayName": "macOS Coverage",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_CXX_FLAGS": "-fprofile-instr-generate -fcoverage-mapping -O0 -g",
+                "CMAKE_C_FLAGS": "-fprofile-instr-generate -fcoverage-mapping -O0 -g",
+                "CMAKE_EXE_LINKER_FLAGS": "-fprofile-instr-generate",
+                "MPHYS_COVERAGE": "ON",
+                "BUILD_TESTS": "ON",
+                "BUILD_GUI": "OFF",
+                "BUILD_EXAMPLES": "OFF"
+            }
+        },
 
         {
             "name": "linux-base",
             "hidden": true,
-            "inherits": "base",
+            "inherits": "base-common",
+            "description": "Uses the default system compiler from PATH (GCC 14+ or Clang 18+ for C++23 <print> support)",
             "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
         },
         {
@@ -76,7 +92,7 @@
         {
             "name": "windows-base",
             "hidden": true,
-            "inherits": "base",
+            "inherits": "base-common",
             "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
         },
         {
@@ -103,7 +119,7 @@
         {
             "name": "web-base",
             "hidden": true,
-            "inherits": "base",
+            "inherits": "base-common",
             "cacheVariables": {
                 "BUILD_TESTS": "OFF",
                 "BUILD_EXAMPLES": "OFF",
@@ -132,6 +148,7 @@
         { "name": "mac-release", "configurePreset": "mac-release", "jobs": 8 },
         { "name": "mac-debug-gui",   "displayName": "macOS Debug — GUI only",   "configurePreset": "mac-debug",   "targets": ["mphys_gui"], "jobs": 8 },
         { "name": "mac-release-gui", "displayName": "macOS Release — GUI only", "configurePreset": "mac-release", "targets": ["mphys_gui"], "jobs": 8 },
+        { "name": "mac-coverage", "configurePreset": "mac-coverage", "targets": ["mphys_tests"], "jobs": 8 },
 
         { "name": "linux-debug",   "configurePreset": "linux-debug",   "jobs": 8 },
         { "name": "linux-release", "configurePreset": "linux-release", "jobs": 8 },
