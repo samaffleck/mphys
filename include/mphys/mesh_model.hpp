@@ -15,29 +15,38 @@ namespace mphys {
 // implement Residual() using the face-based fvm:: operators. The same model
 // runs on any Mesh regardless of dimension.
 //
-// Steady-state only for now (solved by MeshSteadySolver via Newton-Krylov).
-// Each field is a plain std::vector<double> of length mesh.NCells().
+// Solved either to steady state (MeshSteadySolver, Newton-Krylov) or in time
+// (MeshTransientSolver, IDA) — the same Residual() serves both. Each field is a
+// plain std::vector<double> of length mesh.NCells().
 class MeshModel {
  public:
   explicit MeshModel(const Mesh& mesh) : mesh_(mesh) {}
   virtual ~MeshModel() = default;
 
   // Declare a field (one value per cell). Returns its index, used to index the
-  // y / rr arrays in Residual(). Boundary conditions default to zero-Neumann on
-  // every patch until SetBcs() is called.
+  // y / ydot / rr arrays in Residual(). Boundary conditions default to
+  // zero-Neumann on every patch until SetBcs() is called.
   int AddField(const std::string& name, double init_value = 0.0);
 
   // Attach one PatchBc per mesh patch to a field (ordered as Mesh::patches).
   void SetBcs(int field, std::vector<PatchBc> patch_bcs);
 
-  // Form the steady residual rr = F(y) = 0. y[k] / rr[k] are the cell values of
-  // field k. Use mesh() and bcs(k) with the fvm:: face operators.
-  virtual void Residual(const std::vector<std::vector<double>>& y,
+  // Mark a field as algebraic (no time derivative) for transient DAE solves.
+  // Fields are differential by default.
+  void MarkFieldAlgebraic(int field);
+
+  // Form the residual rr = F(t, y, ydot) = 0. y[k] / ydot[k] / rr[k] are the
+  // cell values of field k and its time derivative. For a steady solve `ydot`
+  // is empty; transient models write e.g. rr[k][c] = ydot[k][c] - rhs[c].
+  virtual void Residual(double t,
+                        const std::vector<std::vector<double>>& y,
+                        const std::vector<std::vector<double>>& ydot,
                         std::vector<std::vector<double>>& rr) = 0;
 
   const Mesh& mesh() const { return mesh_; }
   int NFields() const { return static_cast<int>(field_names_.size()); }
   const std::string& field_name(int k) const { return field_names_[k]; }
+  bool field_is_differential(int k) const { return field_differential_[k]; }
   std::vector<std::vector<double>>& fields() { return fields_; }
   const std::vector<std::vector<double>>& fields() const { return fields_; }
   const std::vector<PatchBc>& bcs(int field) const { return bcs_[field]; }
@@ -47,6 +56,7 @@ class MeshModel {
   std::vector<std::string> field_names_;
   std::vector<std::vector<double>> fields_;  // initial guess, then solution
   std::vector<std::vector<PatchBc>> bcs_;    // [field][patch]
+  std::vector<bool> field_differential_;     // [field]; false => algebraic
 };
 
 }  // namespace mphys

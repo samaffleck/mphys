@@ -10,7 +10,15 @@ int MeshModel::AddField(const std::string& name, double init_value) {
   fields_.emplace_back(mesh_.NCells(), init_value);
   // Default: zero-Neumann (no flux) on every patch.
   bcs_.emplace_back(mesh_.patches.size(), NeumannBc(0.0));
+  field_differential_.push_back(true);
   return idx;
+}
+
+void MeshModel::MarkFieldAlgebraic(int field) {
+  if (field < 0 || field >= NFields()) {
+    throw std::out_of_range("MeshModel::MarkFieldAlgebraic: invalid field index");
+  }
+  field_differential_[field] = false;
 }
 
 void MeshModel::SetBcs(int field, std::vector<PatchBc> patch_bcs) {

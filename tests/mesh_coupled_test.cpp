@@ -52,7 +52,8 @@ class CoupledModel : public mphys::MeshModel {
     }
   }
 
-  void Residual(const std::vector<std::vector<double>>& y,
+  void Residual(double /*t*/, const std::vector<std::vector<double>>& y,
+                const std::vector<std::vector<double>>& /*ydot*/,
                 std::vector<std::vector<double>>& rr) override {
     const auto lap_u = mphys::fvm::Laplacian(y[u_], 1.0, mesh_, bcs(u_));
     const auto lap_v = mphys::fvm::Laplacian(y[v_], 1.0, mesh_, bcs(v_));

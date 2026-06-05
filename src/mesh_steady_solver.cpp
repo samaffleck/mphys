@@ -76,7 +76,9 @@ void MeshSteadySolver::Solve() {
 int MeshSteadySolver::SystemCb(N_Vector uu, N_Vector fval, void* user_data) {
   auto& solver = *static_cast<MeshSteadySolver*>(user_data);
   solver.Scatter(uu, solver.scratch_y_);
-  solver.model_.Residual(solver.scratch_y_, solver.scratch_rr_);
+  // Steady solve: no time derivative — pass an empty ydot.
+  static const std::vector<std::vector<double>> kNoYdot;
+  solver.model_.Residual(0.0, solver.scratch_y_, kNoYdot, solver.scratch_rr_);
   solver.Gather(solver.scratch_rr_, fval);
   return 0;
 }

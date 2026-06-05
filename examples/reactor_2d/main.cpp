@@ -40,7 +40,8 @@ class Reactor2D : public mphys::MeshModel {
     for (int f = 0; f < mesh.NFaces(); ++f) u_face_[f] = U * mesh.faces[f].normal[0];
   }
 
-  void Residual(const std::vector<std::vector<double>>& y,
+  void Residual(double /*t*/, const std::vector<std::vector<double>>& y,
+                const std::vector<std::vector<double>>& /*ydot*/,
                 std::vector<std::vector<double>>& rr) override {
     const auto conv_c = mphys::fvm::Convection(y[c_], u_face_, mesh_, bcs(c_));
     const auto lap_c = mphys::fvm::Laplacian(y[c_], Dc_, mesh_, bcs(c_));

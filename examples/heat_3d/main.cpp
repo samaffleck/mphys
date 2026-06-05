@@ -33,7 +33,8 @@ class Heat3D : public mphys::MeshModel {
     }
   }
 
-  void Residual(const std::vector<std::vector<double>>& y,
+  void Residual(double /*t*/, const std::vector<std::vector<double>>& y,
+                const std::vector<std::vector<double>>& /*ydot*/,
                 std::vector<std::vector<double>>& rr) override {
     const auto lap = mphys::fvm::Laplacian(y[T_], 1.0, mesh_, bcs(T_));
     for (int c = 0; c < mesh_.NCells(); ++c) rr[T_][c] = lap[c] - q_[c];
