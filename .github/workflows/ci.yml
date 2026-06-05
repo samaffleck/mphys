@@ -11,6 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ----------------------------------------------------------------------------
   linux:
     name: Linux (GCC 14)
     runs-on: ubuntu-24.04
@@ -22,10 +23,11 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install toolchain
+      # GLFW builds from source on Linux and needs the X11/GL development headers.
+      - name: Install toolchain + GUI headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build gcc-14 g++-14
+          sudo apt-get install -y ninja-build gcc-14 g++-14 xorg-dev libgl1-mesa-dev
 
       - name: Configure
         run: cmake --preset linux-release
@@ -39,6 +41,7 @@ jobs:
       - name: Validation suite
         run: ./build/linux-release/examples/example_validation_1d_diffusion
 
+  # ----------------------------------------------------------------------------
   macos:
     name: macOS (Homebrew LLVM)
     runs-on: macos-14
@@ -50,9 +53,8 @@ jobs:
       - name: Install toolchain
         run: brew install llvm ninja
 
-      # Build without the GUI so the runner needs no GLFW/OpenGL context.
       - name: Configure
-        run: cmake --preset mac-release -DBUILD_GUI=OFF
+        run: cmake --preset mac-release
 
       - name: Build
         run: cmake --build --preset mac-release
@@ -62,3 +64,66 @@ jobs:
 
       - name: Validation suite
         run: ./build/mac-release/examples/example_validation_1d_diffusion
+
+  # ----------------------------------------------------------------------------
+  windows:
+    name: Windows (MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Put cl.exe / the MSVC environment on PATH so the Ninja generator can find it.
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - uses: lukka/get-cmake@latest   # provides CMake + Ninja on the runner
+
+      - name: Configure
+        run: cmake --preset windows-release
+
+      - name: Build
+        run: cmake --build --preset windows-release
+
+      - name: Test
+        run: ctest --test-dir build/windows-release -L mphys --output-on-failure
+
+  # ----------------------------------------------------------------------------
+  web:
+    name: Web (WebAssembly / Emscripten)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
+
+      - name: Configure
+        run: emcmake cmake --preset web-release
+
+      - name: Build GUI
+        run: cmake --build --preset web-release-gui
+
+      - name: Check artifacts
+        run: |
+          test -f build/web-release/gui/mphys_gui.html
+          test -f build/web-release/gui/mphys_gui.wasm
+          test -f build/web-release/gui/mphys_gui.js
+          test -f build/web-release/gui/mphys_gui.data
+          echo "WebAssembly GUI artifacts produced."
+
+      - name: Upload web bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: mphys-web
+          path: |
+            build/web-release/gui/mphys_gui.html
+            build/web-release/gui/mphys_gui.js
+            build/web-release/gui/mphys_gui.wasm
+            build/web-release/gui/mphys_gui.data

@@ -63,3 +63,4 @@ results/
 
 # C++ build directories
 out/
+.gstack/
