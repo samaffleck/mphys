@@ -1,4 +1,11 @@
-add_executable(mphys_gui mphys_gui.cpp)
+add_executable(mphys_gui
+    app_main.cpp
+    gui_widgets.cpp
+    simulation.cpp
+    serialization.cpp
+    panels_config.cpp
+    panels_view.cpp
+)
 
 target_include_directories(mphys_gui PRIVATE
     include
@@ -7,7 +14,7 @@ target_include_directories(mphys_gui PRIVATE
 
 target_precompile_headers(mphys_gui PRIVATE gui_pch.hpp)
 
-target_link_libraries(mphys_gui PRIVATE mphys_lib implot)
+target_link_libraries(mphys_gui PRIVATE mphys_lib implot implot3d)
 
 if(EMSCRIPTEN)
     # ---- WebAssembly build ----------------------------------------------------

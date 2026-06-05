@@ -116,6 +116,16 @@ if(BUILD_GUI)
     target_include_directories(implot PUBLIC external/implot)
     target_link_libraries(implot PUBLIC imgui)
     target_compile_options(implot PRIVATE ${MPHYS_NO_WARN_FLAG})
+
+    # ImPlot3D — rotatable 3D scatter/surface plots for 2D/3D field results.
+    add_library(implot3d STATIC
+        external/implot3d/implot3d.cpp
+        external/implot3d/implot3d_items.cpp
+        external/implot3d/implot3d_meshes.cpp
+    )
+    target_include_directories(implot3d PUBLIC external/implot3d)
+    target_link_libraries(implot3d PUBLIC imgui)
+    target_compile_options(implot3d PRIVATE ${MPHYS_NO_WARN_FLAG})
 endif()
 
 # ============================================================
