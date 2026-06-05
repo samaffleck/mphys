@@ -10,6 +10,7 @@
 #include "mphys/solver_options.hpp"
 #include "mphys/sun_context.hpp"
 #include "mphys/topology.hpp"
+#include "mphys/vtk_writer.hpp"
 
 // 2D coupled convection-diffusion-reaction in a flow channel — a compact
 // multiphysics showcase on the face-based mesh.
@@ -118,6 +119,9 @@ int main() {
     std::println("  {:>8.3f}  {:>10.4f}  {:>10.4f}", mesh.cells[cell].centroid[0],
                  c[cell], T[cell]);
   }
+
+  mphys::WriteVtk("reactor_2d.vti", model);
+  std::println("\n  Wrote reactor_2d.vti (fields c, T) — open in ParaView.");
 
   std::println("{}", std::string(60, '-'));
   std::println("Done. Two coupled transport fields solved together in 2D.");

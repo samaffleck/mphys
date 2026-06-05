@@ -18,6 +18,7 @@ add_executable(mphys_tests
     mesh_coupled_test.cpp
     mesh3d_test.cpp
     mesh_transient_test.cpp
+    vtk_writer_test.cpp
 )
 
 target_link_libraries(mphys_tests

@@ -11,6 +11,7 @@
 #include "mphys/solver_options.hpp"
 #include "mphys/sun_context.hpp"
 #include "mphys/topology.hpp"
+#include "mphys/vtk_writer.hpp"
 
 // Steady 3D heat conduction in a unit cube, solved with the same face-based
 // operators and matrix-free Newton-Krylov solver used for 1D and 2D problems —
@@ -83,6 +84,19 @@ int main() {
                    "---");
     }
     prev_err = err;
+  }
+
+  // Dump a 32^3 solution for ParaView (volume render / slices).
+  {
+    const mphys::Mesh mesh =
+        mphys::MakeStructuredMesh3D(0.0, 1.0, 32, 0.0, 1.0, 32, 0.0, 1.0, 32);
+    Heat3D model(mesh);
+    mphys::SolverOptions opts;
+    opts.tolerance.absolute = 1e-10;
+    mphys::SunContext sunctx;
+    mphys::MeshSteadySolver(model, opts, sunctx).Solve();
+    mphys::WriteVtk("heat_3d.vti", model);
+    std::println("Wrote heat_3d.vti (open in ParaView).");
   }
 
   std::println("{}", std::string(62, '-'));

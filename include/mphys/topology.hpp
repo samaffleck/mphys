@@ -46,6 +46,17 @@ struct BoundaryPatch {
   std::vector<int> faces;  // indices into Mesh::faces
 };
 
+// Optional uniform-grid description, populated by the structured factories.
+// When `valid`, cells are a tensor-product grid laid out with index
+// = (k*ny + j)*nx + i, which is exactly the ordering VTK ImageData expects —
+// letting the VTK writer emit proper cells without storing explicit vertices.
+struct StructuredInfo {
+  bool valid = false;
+  int nx = 0, ny = 1, nz = 1;
+  double x0 = 0.0, y0 = 0.0, z0 = 0.0;
+  double dx = 0.0, dy = 0.0, dz = 0.0;
+};
+
 // Dimension-independent, face-based unstructured mesh (OpenFOAM-style).
 // Internal faces come first in `faces`, followed by boundary faces, but
 // operators rely on Face::neighbour == -1 rather than ordering.
@@ -55,6 +66,7 @@ struct Mesh {
   std::vector<Cell> cells;
   std::vector<Face> faces;
   std::vector<BoundaryPatch> patches;
+  StructuredInfo structured;
 
   int NCells() const { return static_cast<int>(cells.size()); }
   int NFaces() const { return static_cast<int>(faces.size()); }

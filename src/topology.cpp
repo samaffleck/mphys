@@ -44,6 +44,8 @@ Mesh MakeMesh1D(double x0, double x1, int n_cells, CoordSystem coord) {
   mesh.coord_system = coord;
 
   const double cell_width = (x1 - x0) / n_cells;
+  mesh.structured = {true,    n_cells,    1, 1, x0, 0.0, 0.0,
+                     cell_width, cell_width, cell_width};
 
   // Cells.
   mesh.cells.resize(n_cells);
@@ -119,6 +121,7 @@ Mesh MakeStructuredMesh2D(double x0, double x1, int nx,
 
   const double dx = (x1 - x0) / nx;
   const double dy = (y1 - y0) / ny;
+  mesh.structured = {true, nx, ny, 1, x0, y0, 0.0, dx, dy, dy};
   const auto cell_index = [nx](int i, int j) { return j * nx + i; };
 
   // Cells (row-major: index = j*nx + i).
@@ -213,6 +216,7 @@ Mesh MakeStructuredMesh3D(double x0, double x1, int nx,
   const double dx = (x1 - x0) / nx;
   const double dy = (y1 - y0) / ny;
   const double dz = (z1 - z0) / nz;
+  mesh.structured = {true, nx, ny, nz, x0, y0, z0, dx, dy, dz};
   const auto cell_index = [nx, ny](int i, int j, int k) {
     return (k * ny + j) * nx + i;
   };

@@ -10,6 +10,7 @@
 #include "mphys/solver_options.hpp"
 #include "mphys/sun_context.hpp"
 #include "mphys/topology.hpp"
+#include "mphys/vtk_writer.hpp"
 
 // 2D Poisson on the face-based mesh, solved end-to-end with the dimension-
 // independent operators and the matrix-free Newton-Krylov solver.
@@ -78,6 +79,18 @@ int main() {
       std::println("  {:>8}  {:>14.4e}  {:>8}", n, err, "---");
     }
     prev_err = err;
+  }
+
+  // Re-solve the finest grid and dump it for ParaView.
+  {
+    const mphys::Mesh mesh = mphys::MakeStructuredMesh2D(0.0, 1.0, 128, 0.0, 1.0, 128);
+    Poisson2D model(mesh);
+    mphys::SolverOptions opts;
+    opts.tolerance.absolute = 1e-11;
+    mphys::SunContext sunctx;
+    mphys::MeshSteadySolver(model, opts, sunctx).Solve();
+    mphys::WriteVtk("poisson_2d.vti", model);
+    std::println("Wrote poisson_2d.vti (open in ParaView).");
   }
 
   std::println("{}", std::string(60, '-'));
