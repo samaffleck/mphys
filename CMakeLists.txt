@@ -90,6 +90,12 @@ if(BUILD_GUI)
                 set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
                 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
                 set(GLFW_INSTALL        OFF CACHE BOOL "" FORCE)
+                # On Linux, build only the X11 backend (works everywhere via XWayland)
+                # so we don't drag in the Wayland toolchain (wayland-scanner, protocols).
+                # X11 dev headers come from xorg-dev; GLFW_BUILD_X11/WAYLAND are no-ops
+                # on non-Linux platforms.
+                set(GLFW_BUILD_X11      ON  CACHE BOOL "" FORCE)
+                set(GLFW_BUILD_WAYLAND  OFF CACHE BOOL "" FORCE)
                 add_subdirectory(external/glfw SYSTEM)
             else()
                 message(FATAL_ERROR
