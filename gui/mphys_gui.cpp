@@ -20,6 +20,7 @@
 #include "mphys/mesh.hpp"
 #include "mphys/model.hpp"
 #include "mphys/models/spm.hpp"
+#include "mphys/models/spme.hpp"
 #include "mphys/sim_result.hpp"
 #include "mphys/solver_options.hpp"
 #include "mphys/state_vector.hpp"
@@ -341,7 +342,7 @@ struct Geometry1D {
 
 enum class NavNode { Geometry, Physics, Mesh, Study, Results };
 enum class PhysicsModule { ConvectionDiffusion, SteadyDiffusion, DarcyPackedBed,
-                           SingleParticle };
+                           SingleParticle, SingleParticleElectrolyte };
 
 // User-facing Single Particle Model inputs (floats for ImGui widgets).
 // Defaults are representative LG M50 (Chen 2020) values.
@@ -380,6 +381,39 @@ static mphys::models::SpmParameters ToSpmParameters(const SpmInputs& in) {
   return p;
 }
 
+// User-facing SPMe inputs: the SPM particle/kinetics core plus the macroscopic
+// electrolyte (separator + porous-electrode electrolyte transport) parameters.
+struct SpmeInputs {
+  SpmInputs core;                         // particle, kinetics, operating
+  // Separator
+  float L_s = 12e-6f;                      // separator thickness     [m]
+  // Electrolyte volume fractions (porosity) per region
+  float eps_e_n = 0.25f, eps_e_s = 0.47f, eps_e_p = 0.335f;
+  // Electrolyte transport / thermodynamics
+  float D_e     = 1.769e-10f;              // salt diffusivity        [m²/s]
+  float kappa_e = 1.0f;                    // ionic conductivity      [S/m]
+  float t_plus  = 0.2594f;                 // transference number     [-]
+  float brugg   = 1.5f;                     // Bruggeman exponent      [-]
+  // Solid conductivities
+  float sigma_n = 215.0f, sigma_p = 0.18f; // solid conductivities    [S/m]
+  // Initial electrolyte concentration
+  float ce0 = 1000.0f;                     // initial conc.           [mol/m³]
+  // Mesh: cells per region (the particle mesh uses the sum)
+  int n_n = 20, n_s = 12, n_p = 20;
+};
+
+static mphys::models::SpmeParameters ToSpmeParameters(const SpmeInputs& in) {
+  mphys::models::SpmeParameters p;
+  p.core    = ToSpmParameters(in.core);
+  p.L_s     = in.L_s;
+  p.eps_e_n = in.eps_e_n; p.eps_e_s = in.eps_e_s; p.eps_e_p = in.eps_e_p;
+  p.D_e     = in.D_e;     p.kappa_e = in.kappa_e;
+  p.t_plus  = in.t_plus;  p.brugg   = in.brugg;
+  p.sigma_n = in.sigma_n; p.sigma_p = in.sigma_p;
+  p.ce0     = in.ce0;
+  return p;
+}
+
 struct AppState {
   NavNode       nav     = NavNode::Geometry;
   PhysicsModule physics = PhysicsModule::ConvectionDiffusion;
@@ -410,8 +444,10 @@ struct AppState {
   float abs_tol      = 1e-8f;
 
   SpmInputs            spm;
+  SpmeInputs           spme;
   std::vector<double>  spm_time;        // voltage-curve time axis [s]
   std::vector<double>  spm_voltage;     // terminal voltage        [V]
+  std::vector<double>  spme_ce_x;       // electrolyte cell centres [m] (x-axis)
 
   mphys::SimResult     result;
   std::vector<double>  cell_centres;
@@ -575,15 +611,73 @@ static void RunSpm(AppState& s) {
   }
 }
 
+// SPMe: two spherical particles + a macroscopic electrolyte field, plus the
+// terminal-voltage output.  Particles and electrolyte share a cell count but
+// live on different meshes (spherical r∈[0,1] vs Cartesian x∈[0,L]).
+static void RunSpme(AppState& s) {
+  try {
+    auto p = ToSpmeParameters(s.spme);
+    int nn = std::max(2, s.spme.n_n);
+    int ns = std::max(1, s.spme.n_s);
+    int np = std::max(2, s.spme.n_p);
+
+    auto em = mphys::models::MakeSpmeElectrolyteMesh(p, nn, ns, np);
+    auto particle_mesh = mphys::MakeUniformMesh1D(
+        0.0, 1.0, em.mesh.n_cells, mphys::CoordSystem::kSpherical);
+
+    s.cell_centres = particle_mesh.cell_centres;  // normalised radius r/R for particles
+    s.spme_ce_x    = em.mesh.cell_centres;         // electrolyte position x [m]
+
+    mphys::StateVector sv(em.mesh.n_cells);
+    mphys::models::SpmeModel model(particle_mesh, em, sv, p);
+
+    mphys::SolverOptions opts;
+    opts.tolerance.relative = static_cast<double>(s.rel_tol);
+    opts.tolerance.absolute = static_cast<double>(s.abs_tol);
+    opts.initial_time_step  = static_cast<double>(s.dt_initial);
+    opts.maximum_time_step  = static_cast<double>(s.dt_max);
+
+    double dt_snap = std::max(static_cast<double>(s.dt_snapshot),
+                              static_cast<double>(s.dt_max));
+
+    mphys::SunContext sunctx;
+    mphys::TransientSolver solver(model, opts, sunctx);
+    double next_snap = 0.0;
+    std::string warn = solver.Solve(0.0, static_cast<double>(s.t_end),
+        [&](double t, const std::vector<mphys::Field>& f,
+            const std::vector<double>& a) {
+          if (t >= next_snap - 1e-12) {
+            s.result.Record(t, f, a);
+            s.spm_time.push_back(t);
+            s.spm_voltage.push_back(a[model.voltage_index()]);
+            next_snap += dt_snap;
+          }
+        });
+
+    if (!s.result.snapshots.empty()) {
+      s.plot_time   = static_cast<float>(s.result.snapshots.back().t);
+      s.has_results = true;
+      s.nav         = NavNode::Results;
+    }
+    s.status_msg = warn.empty()
+        ? "Done — " + std::to_string(s.result.snapshots.size()) + " snapshots"
+        : "Warning: " + warn;
+  } catch (const std::exception& e) {
+    s.status_msg = std::string("Error: ") + e.what();
+  }
+}
+
 static void RunSimulation(AppState& s) {
   s.has_results = false;
   s.result.snapshots.clear();
   s.cell_centres.clear();
+  s.spme_ce_x.clear();
   s.spm_time.clear();
   s.spm_voltage.clear();
   s.status_msg = "Running...";
 
   if (s.physics == PhysicsModule::SingleParticle) { RunSpm(s); return; }
+  if (s.physics == PhysicsModule::SingleParticleElectrolyte) { RunSpme(s); return; }
 
   try {
     if (!s.geo.built || s.geo.domains.empty())
@@ -749,6 +843,19 @@ template<class Ar> void serialize(Ar& ar, SpmInputs& v) {
      cereal::make_nvp("n_cells", v.n_cells));
 }
 
+template<class Ar> void serialize(Ar& ar, SpmeInputs& v) {
+  ar(cereal::make_nvp("core", v.core),
+     cereal::make_nvp("L_s", v.L_s),
+     cereal::make_nvp("eps_e_n", v.eps_e_n), cereal::make_nvp("eps_e_s", v.eps_e_s),
+     cereal::make_nvp("eps_e_p", v.eps_e_p),
+     cereal::make_nvp("D_e", v.D_e), cereal::make_nvp("kappa_e", v.kappa_e),
+     cereal::make_nvp("t_plus", v.t_plus), cereal::make_nvp("brugg", v.brugg),
+     cereal::make_nvp("sigma_n", v.sigma_n), cereal::make_nvp("sigma_p", v.sigma_p),
+     cereal::make_nvp("ce0", v.ce0),
+     cereal::make_nvp("n_n", v.n_n), cereal::make_nvp("n_s", v.n_s),
+     cereal::make_nvp("n_p", v.n_p));
+}
+
 // Split save/load for AppState so enums round-trip cleanly as ints.
 template<class Ar> void save(Ar& ar, const AppState& v) {
   ar(cereal::make_nvp("physics",        static_cast<int>(v.physics)),
@@ -762,6 +869,7 @@ template<class Ar> void save(Ar& ar, const AppState& v) {
      cereal::make_nvp("pb_left_bc",     v.pb_left_bc),
      cereal::make_nvp("pb_right_bc",    v.pb_right_bc),
      cereal::make_nvp("spm",            v.spm),
+     cereal::make_nvp("spme",           v.spme),
      cereal::make_nvp("t_end",          v.t_end),
      cereal::make_nvp("dt_initial",     v.dt_initial),
      cereal::make_nvp("dt_max",         v.dt_max),
@@ -784,6 +892,7 @@ template<class Ar> void load(Ar& ar, AppState& v) {
      cereal::make_nvp("pb_left_bc",     v.pb_left_bc),
      cereal::make_nvp("pb_right_bc",    v.pb_right_bc),
      cereal::make_nvp("spm",            v.spm),
+     cereal::make_nvp("spme",           v.spme),
      cereal::make_nvp("t_end",          v.t_end),
      cereal::make_nvp("dt_initial",     v.dt_initial),
      cereal::make_nvp("dt_max",         v.dt_max),
@@ -814,6 +923,7 @@ static void LoadState(AppState& s, const std::string& path) {
   s.has_results = false;
   s.result.snapshots.clear();
   s.cell_centres.clear();
+  s.spme_ce_x.clear();
   s.plot_time   = 0.0f;
   s.status_msg.clear();
   s.geo.selected_node = s.geo.selected_domain = -1;
@@ -856,6 +966,20 @@ static void ShowGeometryPanel(AppState& s) {
     ImGui::Spacing();
     ImGui::BulletText("Set particle sizes & materials in the Physics node.");
     ImGui::BulletText("Set radial resolution in the Mesh node.");
+    ImGui::BulletText("Set current & end time in the Study node, then Run.");
+    return;
+  }
+
+  if (s.physics == PhysicsModule::SingleParticleElectrolyte) {
+    ImGui::SeparatorText("Single Particle Model w/ Electrolyte");
+    ImGui::Spacing();
+    ImGui::TextWrapped(
+        "The SPMe builds its own geometry: two spherical particles (r/R in "
+        "[0,1]) plus a macroscopic electrolyte field on the negative | "
+        "separator | positive sandwich. No domain setup is required.");
+    ImGui::Spacing();
+    ImGui::BulletText("Set particle, electrolyte & separator data in Physics.");
+    ImGui::BulletText("Set cells per region in the Mesh node.");
     ImGui::BulletText("Set current & end time in the Study node, then Run.");
     return;
   }
@@ -1096,6 +1220,67 @@ static void ShowGeometryView(AppState& s) {
     return;
   }
 
+  if (s.physics == PhysicsModule::SingleParticleElectrolyte) {
+    // Cell sandwich (negative | separator | positive) with the two
+    // representative particles drawn above their electrodes.
+    const SpmeInputs& m = s.spme;
+    float Ln = m.core.L_n, Ls = m.L_s, Lp = m.core.L_p;
+    float Ltot = std::max(Ln + Ls + Lp, 1e-12f);
+
+    float pad   = 60.0f;
+    float usable = cw - 2.0f * pad;
+    float x0px  = orig.x + pad;
+    float bandTop = orig.y + ch * 0.56f;
+    float bandBot = orig.y + ch * 0.78f;
+    float xn = x0px + usable * (Ln / Ltot);
+    float xs = x0px + usable * ((Ln + Ls) / Ltot);
+    float xe = x0px + usable;
+
+    auto band = [&](float xa, float xb, ImU32 col, const char* lbl) {
+      dl->AddRectFilled(ImVec2(xa, bandTop), ImVec2(xb, bandBot), col, 3.0f);
+      dl->AddRect(ImVec2(xa, bandTop), ImVec2(xb, bandBot),
+                  IM_COL32(200, 210, 230, 120), 3.0f);
+      ImVec2 ts = ImGui::CalcTextSize(lbl);
+      if (xb - xa > ts.x + 6.0f)
+        dl->AddText(ImVec2((xa + xb) * 0.5f - ts.x * 0.5f,
+                           (bandTop + bandBot) * 0.5f - ts.y * 0.5f),
+                    IM_COL32(20, 25, 35, 230), lbl);
+    };
+    band(x0px, xn, IM_COL32(120, 185, 255, 200), "Negative");
+    band(xn,   xs, IM_COL32(170, 180, 200, 180), "Separator");
+    band(xs,   xe, IM_COL32(255, 170, 90, 200),  "Positive");
+
+    // Particles above each electrode.
+    float rmax = std::max(m.core.R_n, m.core.R_p);
+    if (rmax <= 0.0f) rmax = 1.0f;
+    float base = std::min(cw, ch) * 0.11f;
+    float pcy  = orig.y + ch * 0.30f;
+    auto particle = [&](float cx, float radius_m, ImU32 col) {
+      float r = base * (radius_m / rmax);
+      for (int k = 3; k >= 1; --k)
+        dl->AddCircle(ImVec2(cx, pcy), r * k / 3.0f,
+                      IM_COL32(((col >> 0) & 0xFF), ((col >> 8) & 0xFF),
+                               ((col >> 16) & 0xFF), 60), 0, 1.0f);
+      dl->AddCircle(ImVec2(cx, pcy), r, col, 0, 2.5f);
+      dl->AddCircleFilled(ImVec2(cx, pcy), 2.0f, col);
+    };
+    particle((x0px + xn) * 0.5f, m.core.R_n, IM_COL32(120, 185, 255, 255));
+    particle((xs + xe) * 0.5f,   m.core.R_p, IM_COL32(255, 170, 90, 255));
+
+    dl->AddText(ImVec2(x0px, bandBot + 8.0f), IM_COL32(150, 170, 200, 200),
+                "x = 0");
+    const char* xl = "x = L";
+    ImVec2 xls = ImGui::CalcTextSize(xl);
+    dl->AddText(ImVec2(xe - xls.x, bandBot + 8.0f),
+                IM_COL32(150, 170, 200, 200), xl);
+
+    const char* title = "Single Particle Model w/ Electrolyte";
+    ImVec2 tts = ImGui::CalcTextSize(title);
+    dl->AddText(ImVec2(orig.x + (cw - tts.x) * 0.5f, orig.y + 16.0f),
+                IM_COL32(150, 170, 200, 200), title);
+    return;
+  }
+
   if (!geo.built || (int)geo.nodes.size() < 2) {
     const char* msg = "Configure geometry and press  Build";
     ImVec2 ts = ImGui::CalcTextSize(msg);
@@ -1232,12 +1417,7 @@ static void ShowGeometryView(AppState& s) {
 
 // Single Particle Model parameter editor.  Grouped by physical role; every
 // field is editable as a number or an expression (e.g. "5e-6", "0.84*33133").
-static void ShowSpmPhysics(AppState& s) {
-  SpmInputs& m = s.spm;
-
-  ImGui::TextDisabled("Each electrode is one spherical particle (PyBaMM SPM).");
-  ImGui::Spacing();
-
+static void ShowSpmCoreInputs(SpmInputs& m, bool show_ce) {
   ImGui::SeparatorText("Particle Geometry");
   ImGui::Spacing();
   LabeledFloat("Negative radius  R_n", "##Rn", &m.R_n, "m", "%.4g");
@@ -1273,8 +1453,10 @@ static void ShowSpmPhysics(AppState& s) {
   ImGui::Spacing();
   LabeledFloat("Initial pos. stoich.  y0", "##y0", &m.y0, nullptr, "%.4g");
   if (m.y0 < 0.0f) m.y0 = 0.0f; if (m.y0 > 1.0f) m.y0 = 1.0f;
-  ImGui::Spacing();
-  LabeledFloat("Electrolyte conc.  c_e", "##ce", &m.c_e, "mol/m\xc2\xb3", "%.5g");
+  if (show_ce) {
+    ImGui::Spacing();
+    LabeledFloat("Electrolyte conc.  c_e", "##ce", &m.c_e, "mol/m\xc2\xb3", "%.5g");
+  }
 
   ImGui::Spacing();
   ImGui::SeparatorText("Kinetics");
@@ -1293,35 +1475,92 @@ static void ShowSpmPhysics(AppState& s) {
   LabeledFloat("Temperature  T", "##temp", &m.T, "K", "%.5g");
 }
 
+static void ShowSpmPhysics(AppState& s) {
+  ImGui::TextDisabled("Each electrode is one spherical particle (PyBaMM SPM).");
+  ImGui::Spacing();
+  ShowSpmCoreInputs(s.spm, /*show_ce=*/true);
+}
+
+// SPMe parameter editor: the SPM particle core plus the electrolyte transport
+// and separator parameters that distinguish the SPMe (PyBaMM SPMe).
+static void ShowSpmePhysics(AppState& s) {
+  SpmeInputs& m = s.spme;
+
+  ImGui::TextDisabled("Two particles + electrolyte transport (PyBaMM SPMe).");
+  ImGui::Spacing();
+  ShowSpmCoreInputs(m.core, /*show_ce=*/false);  // electrolyte is now a field
+
+  ImGui::Spacing();
+  ImGui::SeparatorText("Separator");
+  ImGui::Spacing();
+  LabeledFloat("Separator thickness  L_s", "##Ls", &m.L_s, "m", "%.4g");
+
+  ImGui::Spacing();
+  ImGui::SeparatorText("Electrolyte Porosity");
+  ImGui::Spacing();
+  LabeledFloat("Neg. electrolyte frac.", "##een", &m.eps_e_n, nullptr, "%.4g");
+  ImGui::Spacing();
+  LabeledFloat("Sep. electrolyte frac.", "##ees", &m.eps_e_s, nullptr, "%.4g");
+  ImGui::Spacing();
+  LabeledFloat("Pos. electrolyte frac.", "##eep", &m.eps_e_p, nullptr, "%.4g");
+
+  ImGui::Spacing();
+  ImGui::SeparatorText("Electrolyte Transport");
+  ImGui::Spacing();
+  LabeledFloat("Salt diffusivity  D_e", "##De", &m.D_e, "m\xc2\xb2/s", "%.3e");
+  ImGui::Spacing();
+  LabeledFloat("Ionic conductivity  \xce\xba_e", "##kappae", &m.kappa_e, "S/m", "%.4g");
+  ImGui::Spacing();
+  LabeledFloat("Transference  t+", "##tplus", &m.t_plus, nullptr, "%.4g");
+  ImGui::Spacing();
+  LabeledFloat("Bruggeman exponent", "##brugg", &m.brugg, nullptr, "%.4g");
+  ImGui::Spacing();
+  LabeledFloat("Initial electrolyte conc.", "##ce0", &m.ce0, "mol/m\xc2\xb3", "%.5g");
+
+  ImGui::Spacing();
+  ImGui::SeparatorText("Solid Conductivity");
+  ImGui::Spacing();
+  LabeledFloat("Negative  \xcf\x83_n", "##sign", &m.sigma_n, "S/m", "%.4g");
+  ImGui::Spacing();
+  LabeledFloat("Positive  \xcf\x83_p", "##sigp", &m.sigma_p, "S/m", "%.4g");
+}
+
 static void ShowPhysicsPanel(AppState& s) {
   static constexpr const char* kMods[] = {
       "Convection-Diffusion-Reaction",
       "Steady Diffusion",
       "Darcy Packed Bed",
-      "Single Particle Model"
+      "Single Particle Model",
+      "Single Particle Model w/ Electrolyte"
   };
   bool is_darcy     = (s.physics == PhysicsModule::DarcyPackedBed);
   bool is_spm       = (s.physics == PhysicsModule::SingleParticle);
+  bool is_spme      = (s.physics == PhysicsModule::SingleParticleElectrolyte);
   bool is_transient = (s.physics == PhysicsModule::ConvectionDiffusion || is_darcy);
 
   ImGui::SeparatorText("Physics Module");
   ImGui::Spacing();
   int sel = static_cast<int>(s.physics);
   ImGui::SetNextItemWidth(-1.0f);
-  if (ImGui::Combo("##phys", &sel, kMods, 4)) {
+  if (ImGui::Combo("##phys", &sel, kMods, IM_ARRAYSIZE(kMods))) {
     PhysicsModule prev = s.physics;
     s.physics = static_cast<PhysicsModule>(sel);
-    // First switch into SPM: seed discharge-friendly time settings.
-    if (s.physics == PhysicsModule::SingleParticle &&
-        prev != PhysicsModule::SingleParticle) {
+    // First switch into a particle model: seed discharge-friendly time settings.
+    const bool now_particle = s.physics == PhysicsModule::SingleParticle ||
+                              s.physics == PhysicsModule::SingleParticleElectrolyte;
+    const bool was_particle = prev == PhysicsModule::SingleParticle ||
+                              prev == PhysicsModule::SingleParticleElectrolyte;
+    if (now_particle && !was_particle) {
       s.t_end = 3600.0f; s.dt_max = 20.0f; s.dt_snapshot = 20.0f;
-      is_spm = true;
     }
+    is_spm  = (s.physics == PhysicsModule::SingleParticle);
+    is_spme = (s.physics == PhysicsModule::SingleParticleElectrolyte);
   }
 
   ImGui::Spacing();
 
-  if (is_spm) { ShowSpmPhysics(s); return; }
+  if (is_spm)  { ShowSpmPhysics(s);  return; }
+  if (is_spme) { ShowSpmePhysics(s); return; }
 
   if (!s.geo.built || s.geo.domains.empty()) {
     ImGui::TextDisabled("Build the geometry to configure physics parameters.");
@@ -1427,6 +1666,25 @@ static void ShowMeshPanel(AppState& s) {
     ImGui::Spacing();
     ImGui::Text("Total unknowns: %d  (2 particles + voltage)",
                 2 * s.spm.n_cells + 1);
+    return;
+  }
+
+  if (s.physics == PhysicsModule::SingleParticleElectrolyte) {
+    ImGui::TextDisabled("Electrolyte cells per region (x across the sandwich).");
+    ImGui::Spacing();
+    LabeledInt("Negative electrode", "##spmenn", &s.spme.n_n);
+    if (s.spme.n_n < 2) s.spme.n_n = 2;
+    ImGui::Spacing();
+    LabeledInt("Separator", "##spmens", &s.spme.n_s);
+    if (s.spme.n_s < 1) s.spme.n_s = 1;
+    ImGui::Spacing();
+    LabeledInt("Positive electrode", "##spmenp", &s.spme.n_p);
+    if (s.spme.n_p < 2) s.spme.n_p = 2;
+    ImGui::Spacing();
+    const int ntot = s.spme.n_n + s.spme.n_s + s.spme.n_p;
+    ImGui::TextDisabled("Particles share the total cell count as radial points.");
+    ImGui::Text("Total unknowns: %d  (2 particles + electrolyte + voltage)",
+                3 * ntot + 1);
     return;
   }
 
@@ -1541,10 +1799,12 @@ static void ShowResultsPanel(AppState& s) {
     return;
   }
 
-  const bool is_spm = (s.physics == PhysicsModule::SingleParticle);
+  const bool is_spm  = (s.physics == PhysicsModule::SingleParticle);
+  const bool is_spme = (s.physics == PhysicsModule::SingleParticleElectrolyte);
+  const bool is_particle = is_spm || is_spme;
 
-  // SPM: terminal voltage vs time, with a marker at the selected instant.
-  if (is_spm && !s.spm_voltage.empty()) {
+  // SPM/SPMe: terminal voltage vs time, with a marker at the selected instant.
+  if (is_particle && !s.spm_voltage.empty()) {
     ImGui::SeparatorText("Terminal Voltage");
     ImGui::Spacing();
     int nv = static_cast<int>(s.spm_voltage.size());
@@ -1572,7 +1832,8 @@ static void ShowResultsPanel(AppState& s) {
       ImPlot::EndPlot();
     }
     ImGui::Spacing();
-    ImGui::SeparatorText("Particle Concentration");
+    ImGui::SeparatorText(is_spme ? "Concentration Profiles"
+                                 : "Particle Concentration");
     ImGui::Spacing();
   }
 
@@ -1634,16 +1895,27 @@ static void ShowResultsPanel(AppState& s) {
   }
 
   const std::string& fname = snaps[0].fields[field_idx].name;
-  int n_cells = static_cast<int>(s.cell_centres.size());
+
+  // For SPMe the electrolyte field lives on the Cartesian sandwich (x in m),
+  // while the particle fields live on the normalised radius r/R.  Pick the
+  // matching x-axis array and label per selected field.
+  const bool is_electrolyte = is_spme && fname == "c_e";
+  const std::vector<double>& x_axis =
+      (is_electrolyte && !s.spme_ce_x.empty()) ? s.spme_ce_x : s.cell_centres;
+  const char* x_label = is_electrolyte ? "x  [m]"
+                      : is_particle    ? "r / R  [-]"
+                                       : "x  [m]";
+  int n_cells = std::min(static_cast<int>(x_axis.size()),
+                         static_cast<int>(plot_vals.size()));
 
   ImVec2 plot_size = ImGui::GetContentRegionAvail();
   plot_size.y -= 4.0f;
 
   if (ImPlot::BeginPlot("##results", plot_size)) {
-    ImPlot::SetupAxes(is_spm ? "r / R  [-]" : "x  [m]", fname.c_str(),
+    ImPlot::SetupAxes(x_label, fname.c_str(),
                       ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
     ImPlot::PlotLine(fname.c_str(),
-        s.cell_centres.data(), plot_vals.data(), n_cells);
+        x_axis.data(), plot_vals.data(), n_cells);
     ImPlot::EndPlot();
   }
 }
@@ -1741,6 +2013,7 @@ static void RenderFrame(AppState& s) {
         static const char* kExamples[] = {
             "darcy_packed_bed.json",
             "single_particle_model.json",
+            "single_particle_model_electrolyte.json",
         };
         for (const char* ex : kExamples) {
           if (ImGui::MenuItem(ex)) {
