@@ -1,0 +1,28 @@
+# Doxygen configuration for the mphys API reference.
+# Run from the repository root:  doxygen docs/Doxyfile
+# Output is written to build/docs/html/index.html (kept out of version control).
+
+PROJECT_NAME           = "mphys"
+PROJECT_BRIEF          = "A C++23 finite volume library for 1D PDEs"
+PROJECT_NUMBER         = 1.0.0
+
+# Inputs: the public headers and the README as the landing page.
+INPUT                  = include/mphys README.md CONTRIBUTING.md
+RECURSIVE              = YES
+FILE_PATTERNS          = *.hpp *.h
+USE_MDFILE_AS_MAINPAGE = README.md
+
+OUTPUT_DIRECTORY       = build/docs
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+
+# Document everything in the public headers, even without explicit @brief tags,
+# and treat // comments preceding declarations as documentation.
+EXTRACT_ALL            = YES
+JAVADOC_AUTOBRIEF      = YES
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = NO
+
+# Nicer navigation.
+GENERATE_TREEVIEW      = YES
+SORT_MEMBER_DOCS       = NO

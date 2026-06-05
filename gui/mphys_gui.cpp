@@ -13,7 +13,13 @@
 
 #include <GLFW/glfw3.h>
 #include "themes.h"
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#include <emscripten/html5.h>
+#else
 #include "tinyfiledialogs.h"
+#endif
 
 #include "mphys/boundary_condition.hpp"
 #include "mphys/fvm_operators.hpp"
@@ -2082,6 +2088,8 @@ static void RenderFrame(AppState& s) {
 
   if (ImGui::BeginMenuBar()) {
     if (ImGui::BeginMenu("File")) {
+#ifndef __EMSCRIPTEN__
+      // Native file dialogs are unavailable in the browser sandbox.
       if (ImGui::MenuItem("Open...", "Ctrl+O")) {
         static const char* kFilter[] = {"*.json"};
         const char* path = tinyfd_openFileDialog(
@@ -2109,6 +2117,7 @@ static void RenderFrame(AppState& s) {
         }
       }
       ImGui::Separator();
+#endif
       if (ImGui::BeginMenu("Examples")) {
         // Enumerate *.json files in MPHYS_ASSETS_DIR/examples/
         static const std::string kExDir = std::string(MPHYS_ASSETS_DIR) + "/examples/";
@@ -2132,9 +2141,11 @@ static void RenderFrame(AppState& s) {
         }
         ImGui::EndMenu();
       }
+#ifndef __EMSCRIPTEN__
       ImGui::Separator();
       if (ImGui::MenuItem("Quit", "Alt+F4"))
         glfwSetWindowShouldClose(glfwGetCurrentContext(), GLFW_TRUE);
+#endif
       ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Study")) {
@@ -2218,6 +2229,40 @@ static void RenderFrame(AppState& s) {
 }
 
 // ============================================================
+// Render loop
+// ============================================================
+
+// Bundles everything a single frame needs, so the body can be shared between the
+// desktop while-loop and the Emscripten requestAnimationFrame callback.
+struct LoopContext {
+  GLFWwindow* window;
+  AppState* state;
+};
+
+static void MainLoopStep(void* arg) {
+  LoopContext* ctx = static_cast<LoopContext*>(arg);
+  GLFWwindow* window = ctx->window;
+
+  glfwPollEvents();
+  ImGui_ImplOpenGL3_NewFrame();
+  ImGui_ImplGlfw_NewFrame();
+  ImGui::NewFrame();
+
+  RenderFrame(*ctx->state);
+
+  ImGui::Render();
+  int fb_w, fb_h;
+  glfwGetFramebufferSize(window, &fb_w, &fb_h);
+  glViewport(0, 0, fb_w, fb_h);
+
+  const ImVec4 bg = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
+  glClearColor(bg.x, bg.y, bg.z, bg.w);
+  glClear(GL_COLOR_BUFFER_BIT);
+  ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+  glfwSwapBuffers(window);
+}
+
+// ============================================================
 // Entry point
 // ============================================================
 
@@ -2227,7 +2272,11 @@ int main() {
   });
   if (!glfwInit()) return 1;
 
-#ifdef __APPLE__
+#if defined(__EMSCRIPTEN__)
+  // Emscripten serves a WebGL2 context (GLES 3.0) via its GLFW port; the desktop
+  // core-profile hints below do not apply.
+  const char* glsl_version = "#version 300 es";
+#elif defined(__APPLE__)
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -2240,7 +2289,9 @@ int main() {
   const char* glsl_version = "#version 130";
 #endif
 
+#ifndef __EMSCRIPTEN__
   glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
+#endif
   GLFWwindow* window = glfwCreateWindow(1400, 900, "mphys", nullptr, nullptr);
   if (!window) { glfwTerminate(); return 1; }
 
@@ -2257,6 +2308,7 @@ int main() {
 
   float xscale = 1.0f;
   glfwGetWindowContentScale(window, &xscale, nullptr);
+  if (xscale <= 0.0f) xscale = 1.0f;
   const float font_size = std::floor(15.0f * xscale);
   io.Fonts->AddFontFromFileTTF(
       MPHYS_ASSETS_DIR "/fonts/Roboto-VariableFont_wdth,wght.ttf", font_size);
@@ -2265,28 +2317,23 @@ int main() {
   Themes::SetDarkTheme();
 
   ImGui_ImplGlfw_InitForOpenGL(window, true);
+#ifdef __EMSCRIPTEN__
+  // Keep the GLFW window / framebuffer in sync with the HTML canvas size.
+  ImGui_ImplGlfw_InstallEmscriptenCallbacks(window, "#canvas");
+#endif
   ImGui_ImplOpenGL3_Init(glsl_version);
 
+#if defined(__EMSCRIPTEN__)
+  // The browser owns the event loop, so the context must outlive main(): with
+  // simulate_infinite_loop the stack is unwound while the callback keeps firing.
+  // Heap-allocate and intentionally never free (lives for the page's lifetime).
+  auto* ctx = new LoopContext{window, new AppState()};
+  emscripten_set_main_loop_arg(MainLoopStep, ctx, 0, /*simulate_infinite_loop=*/true);
+#else
   AppState state;
-
+  LoopContext ctx{window, &state};
   while (!glfwWindowShouldClose(window)) {
-    glfwPollEvents();
-    ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplGlfw_NewFrame();
-    ImGui::NewFrame();
-
-    RenderFrame(state);
-
-    ImGui::Render();
-    int fb_w, fb_h;
-    glfwGetFramebufferSize(window, &fb_w, &fb_h);
-    glViewport(0, 0, fb_w, fb_h);
-
-    const ImVec4 bg = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
-    glClearColor(bg.x, bg.y, bg.z, bg.w);
-    glClear(GL_COLOR_BUFFER_BIT);
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-    glfwSwapBuffers(window);
+    MainLoopStep(&ctx);
   }
 
   ImGui_ImplOpenGL3_Shutdown();
@@ -2295,5 +2342,6 @@ int main() {
   ImGui::DestroyContext();
   glfwDestroyWindow(window);
   glfwTerminate();
+#endif
   return 0;
 }
