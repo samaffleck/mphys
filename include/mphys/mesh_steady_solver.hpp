@@ -1,9 +1,11 @@
 #pragma once
 
+#include <optional>
 #include <vector>
 
 #include <nvector/nvector_serial.h>
 
+#include "mphys/diagonal_preconditioner.hpp"
 #include "mphys/mesh_model.hpp"
 #include "mphys/solver_options.hpp"
 #include "mphys/sundials_types.hpp"
@@ -30,8 +32,15 @@ class MeshSteadySolver {
   // model.fields(). Throws on failure.
   void Solve();
 
+  // Number of GMRES iterations across the solve (diagnostic / benchmarking).
+  long NumLinearIterations() const;
+
  private:
   static int SystemCb(N_Vector uu, N_Vector fval, void* user_data);
+  static int PrecSetupCb(N_Vector u, N_Vector uscale, N_Vector fval,
+                         N_Vector fscale, void* user_data);
+  static int PrecSolveCb(N_Vector u, N_Vector uscale, N_Vector fval,
+                         N_Vector fscale, N_Vector v, void* user_data);
   static void CheckFlag(int flag, const char* func_name);
 
   void Scatter(N_Vector nv, std::vector<std::vector<double>>& fields) const;
@@ -46,6 +55,8 @@ class MeshSteadySolver {
   KinMem kin_mem_;
   SunVector u_;
   SunLinearSolver ls_;
+
+  std::optional<DiagonalPreconditioner> precond_;
 
   std::vector<std::vector<double>> scratch_y_;
   std::vector<std::vector<double>> scratch_rr_;

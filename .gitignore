@@ -63,4 +63,8 @@ results/
 
 # C++ build directories
 out/
+# Example VTK output
+*.vti
+*.pvd
+transient_2d_out/
 .gstack/

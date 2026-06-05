@@ -30,6 +30,11 @@ namespace mphys {
     double relaxation_factor = 0.95;
     int jac_update_freq = 10;
     int max_Newton_iter = 200;
+
+    // Matrix-free mesh solvers only: use a Jacobi (diagonal) preconditioner for
+    // the GMRES linear solves. Helps variable-coefficient and transient systems;
+    // a harmless constant scaling for uniform constant-coefficient operators.
+    bool jacobi_preconditioner = true;
   };
 
 } // end mphys namespace
