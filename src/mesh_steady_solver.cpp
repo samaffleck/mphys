@@ -21,9 +21,12 @@ MeshSteadySolver::MeshSteadySolver(MeshModel& model, const SolverOptions& opts,
   u_ = SunVector(N_, sunctx);
 
   // Matrix-free GMRES. Use a Krylov subspace large enough to solve small/medium
-  // systems without restarts; SUN_PREC_NONE = no preconditioner.
+  // systems without restarts. A Jacobi (diagonal) preconditioner is applied on
+  // the right unless disabled.
   const int maxl = std::min(N_, 500);
-  ls_ = SunLinearSolver(u_, SUN_PREC_NONE, maxl, sunctx);
+  const int pretype = opts_.jacobi_preconditioner ? SUN_PREC_RIGHT : SUN_PREC_NONE;
+  ls_ = SunLinearSolver(u_, pretype, maxl, sunctx);
+  if (opts_.jacobi_preconditioner) precond_.emplace(model_.mesh(), n_fields_);
 
   // Scratch per-field arrays.
   scratch_y_.assign(n_fields_, std::vector<double>(n_cells_, 0.0));
@@ -36,6 +39,10 @@ MeshSteadySolver::MeshSteadySolver(MeshModel& model, const SolverOptions& opts,
   CheckFlag(KINInit(kin_mem_, SystemCb, u_), "KINInit");
   // Matrix-free: pass a NULL matrix so KINSOL uses difference-quotient J*v.
   CheckFlag(KINSetLinearSolver(kin_mem_, ls_, nullptr), "KINSetLinearSolver");
+  if (precond_) {
+    CheckFlag(KINSetPreconditioner(kin_mem_, PrecSetupCb, PrecSolveCb),
+              "KINSetPreconditioner");
+  }
   // Constant, moderately tight forcing term: appropriate for the limited
   // accuracy of finite-difference Jacobian-vector products.
   CheckFlag(KINSetEtaForm(kin_mem_, KIN_ETACONSTANT), "KINSetEtaForm");
@@ -80,6 +87,46 @@ int MeshSteadySolver::SystemCb(N_Vector uu, N_Vector fval, void* user_data) {
   static const std::vector<std::vector<double>> kNoYdot;
   solver.model_.Residual(0.0, solver.scratch_y_, kNoYdot, solver.scratch_rr_);
   solver.Gather(solver.scratch_rr_, fval);
+  return 0;
+}
+
+long MeshSteadySolver::NumLinearIterations() const {
+  long n = 0;
+  KINGetNumLinIters(kin_mem_, &n);
+  return n;
+}
+
+// static
+int MeshSteadySolver::PrecSetupCb(N_Vector u, N_Vector /*uscale*/,
+                                  N_Vector fval, N_Vector /*fscale*/,
+                                  void* user_data) {
+  auto& solver = *static_cast<MeshSteadySolver*>(user_data);
+  const double* base_F = N_VGetArrayPointer(fval);
+
+  auto eval = [&solver](const double* y, const double* /*ydot*/, double* F) {
+    static const std::vector<std::vector<double>> kNoYdot;
+    for (int k = 0; k < solver.n_fields_; ++k) {
+      const int base = k * solver.n_cells_;
+      for (int i = 0; i < solver.n_cells_; ++i) solver.scratch_y_[k][i] = y[base + i];
+    }
+    solver.model_.Residual(0.0, solver.scratch_y_, kNoYdot, solver.scratch_rr_);
+    for (int k = 0; k < solver.n_fields_; ++k) {
+      const int base = k * solver.n_cells_;
+      for (int i = 0; i < solver.n_cells_; ++i) F[base + i] = solver.scratch_rr_[k][i];
+    }
+  };
+
+  solver.precond_->Update(eval, N_VGetArrayPointer(u), nullptr, 0.0, base_F);
+  return 0;
+}
+
+// static
+int MeshSteadySolver::PrecSolveCb(N_Vector /*u*/, N_Vector /*uscale*/,
+                                  N_Vector /*fval*/, N_Vector /*fscale*/,
+                                  N_Vector v, void* user_data) {
+  auto& solver = *static_cast<MeshSteadySolver*>(user_data);
+  double* r = N_VGetArrayPointer(v);
+  solver.precond_->Apply(r, r);  // in place
   return 0;
 }
 

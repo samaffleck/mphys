@@ -1,11 +1,13 @@
 #pragma once
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include <nvector/nvector_serial.h>
 
+#include "mphys/diagonal_preconditioner.hpp"
 #include "mphys/mesh_model.hpp"
 #include "mphys/solver_options.hpp"
 #include "mphys/sundials_types.hpp"
@@ -37,9 +39,17 @@ class MeshTransientSolver {
       std::function<void(double t, const std::vector<std::vector<double>>&)>
           output_cb = {});
 
+  // Total GMRES iterations across the integration (diagnostic / benchmarking).
+  long NumLinearIterations() const;
+
  private:
   static int ResidualCb(sunrealtype t, N_Vector yy, N_Vector yp, N_Vector rr,
                         void* user_data);
+  static int PrecSetupCb(sunrealtype tt, N_Vector yy, N_Vector yp, N_Vector rr,
+                         sunrealtype cj, void* user_data);
+  static int PrecSolveCb(sunrealtype tt, N_Vector yy, N_Vector yp, N_Vector rr,
+                         N_Vector rvec, N_Vector zvec, sunrealtype cj,
+                         sunrealtype delta, void* user_data);
   static void CheckFlag(int flag, const char* func_name);
 
   void Scatter(N_Vector nv, std::vector<std::vector<double>>& fields) const;
@@ -56,6 +66,8 @@ class MeshTransientSolver {
   SunVector yp_;
   SunVector id_;
   SunLinearSolver ls_;
+
+  std::optional<DiagonalPreconditioner> precond_;
 
   std::vector<std::vector<double>> scratch_y_;
   std::vector<std::vector<double>> scratch_ydot_;

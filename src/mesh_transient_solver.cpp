@@ -25,9 +25,12 @@ MeshTransientSolver::MeshTransientSolver(MeshModel& model,
   yp_ = SunVector(N_, sunctx);
   id_ = SunVector(N_, sunctx);
 
-  // Matrix-free GMRES, no preconditioner (same approach as the steady solver).
+  // Matrix-free GMRES with an optional Jacobi preconditioner (left, as IDA
+  // expects), same approach as the steady solver.
   const int maxl = std::min(N_, 500);
-  ls_ = SunLinearSolver(yy_, SUN_PREC_NONE, maxl, sunctx);
+  const int pretype = opts_.jacobi_preconditioner ? SUN_PREC_LEFT : SUN_PREC_NONE;
+  ls_ = SunLinearSolver(yy_, pretype, maxl, sunctx);
+  if (opts_.jacobi_preconditioner) precond_.emplace(model_.mesh(), n_fields_);
 
   scratch_y_.assign(n_fields_, std::vector<double>(n_cells_, 0.0));
   scratch_ydot_.assign(n_fields_, std::vector<double>(n_cells_, 0.0));
@@ -53,6 +56,10 @@ MeshTransientSolver::MeshTransientSolver(MeshModel& model,
                             opts_.tolerance.absolute),
             "IDASStolerances");
   CheckFlag(IDASetLinearSolver(ida_mem_, ls_, nullptr), "IDASetLinearSolver");
+  if (precond_) {
+    CheckFlag(IDASetPreconditioner(ida_mem_, PrecSetupCb, PrecSolveCb),
+              "IDASetPreconditioner");
+  }
   CheckFlag(IDASetId(ida_mem_, id_), "IDASetId");
   CheckFlag(IDASetMaxStep(ida_mem_, opts_.maximum_time_step), "IDASetMaxStep");
   CheckFlag(IDASetMaxNumSteps(ida_mem_, 100000), "IDASetMaxNumSteps");
@@ -103,6 +110,51 @@ int MeshTransientSolver::ResidualCb(sunrealtype t, N_Vector yy, N_Vector yp,
   solver.model_.Residual(t, solver.scratch_y_, solver.scratch_ydot_,
                          solver.scratch_rr_);
   solver.Gather(solver.scratch_rr_, rr);
+  return 0;
+}
+
+long MeshTransientSolver::NumLinearIterations() const {
+  long n = 0;
+  IDAGetNumLinIters(ida_mem_, &n);
+  return n;
+}
+
+// static
+int MeshTransientSolver::PrecSetupCb(sunrealtype tt, N_Vector yy, N_Vector yp,
+                                     N_Vector rr, sunrealtype cj,
+                                     void* user_data) {
+  auto& solver = *static_cast<MeshTransientSolver*>(user_data);
+  const double* base_F = N_VGetArrayPointer(rr);
+
+  auto eval = [&solver, tt](const double* y, const double* ydot, double* F) {
+    for (int k = 0; k < solver.n_fields_; ++k) {
+      const int base = k * solver.n_cells_;
+      for (int i = 0; i < solver.n_cells_; ++i) {
+        solver.scratch_y_[k][i] = y[base + i];
+        solver.scratch_ydot_[k][i] = ydot[base + i];
+      }
+    }
+    solver.model_.Residual(tt, solver.scratch_y_, solver.scratch_ydot_,
+                           solver.scratch_rr_);
+    for (int k = 0; k < solver.n_fields_; ++k) {
+      const int base = k * solver.n_cells_;
+      for (int i = 0; i < solver.n_cells_; ++i) F[base + i] = solver.scratch_rr_[k][i];
+    }
+  };
+
+  solver.precond_->Update(eval, N_VGetArrayPointer(yy), N_VGetArrayPointer(yp),
+                          cj, base_F);
+  return 0;
+}
+
+// static
+int MeshTransientSolver::PrecSolveCb(sunrealtype /*tt*/, N_Vector /*yy*/,
+                                     N_Vector /*yp*/, N_Vector /*rr*/,
+                                     N_Vector rvec, N_Vector zvec,
+                                     sunrealtype /*cj*/, sunrealtype /*delta*/,
+                                     void* user_data) {
+  auto& solver = *static_cast<MeshTransientSolver*>(user_data);
+  solver.precond_->Apply(N_VGetArrayPointer(rvec), N_VGetArrayPointer(zvec));
   return 0;
 }
 
