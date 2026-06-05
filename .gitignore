@@ -67,3 +67,4 @@ out/
 *.vti
 *.pvd
 transient_2d_out/
+.gstack/

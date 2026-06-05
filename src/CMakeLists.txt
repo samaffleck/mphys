@@ -13,6 +13,11 @@ add_library(mphys_lib STATIC
     vtk_writer.cpp
     transient_solver.cpp
     steady_solver.cpp
+    models/transport.cpp
+    models/darcy_packed_bed.cpp
+    models/model_build_context.cpp
+    models/model_registry.cpp
+    models/register_builtins.cpp
 )
 
 target_include_directories(mphys_lib PUBLIC
