@@ -10,6 +10,11 @@ add_library(mphys_lib STATIC
     mesh_steady_solver.cpp
     transient_solver.cpp
     steady_solver.cpp
+    models/transport.cpp
+    models/darcy_packed_bed.cpp
+    models/model_build_context.cpp
+    models/model_registry.cpp
+    models/register_builtins.cpp
 )
 
 target_include_directories(mphys_lib PUBLIC
