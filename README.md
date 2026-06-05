@@ -19,61 +19,104 @@ A C++23 finite volume library for solving 1D PDEs. Physics models are defined by
 
 ## Requirements
 
-- CMake ≥ 3.25, Ninja
-- A C++23 compiler with `<print>` support:
-  - **macOS:** Homebrew LLVM Clang (`brew install llvm`) — the `mac-*` presets point at `/opt/homebrew/opt/llvm/bin/clang++`
-  - **Linux:** GCC ≥ 14 or Clang ≥ 18 (the `linux-*` presets use your default compiler from `PATH`)
-  - **Windows:** MSVC (VS 2022) or clang-cl
-- For the web build: [Emscripten](https://emscripten.org/) (`emcc` / `emcmake` on `PATH`)
+- **CMake ≥ 3.25** and **Ninja**
+- A **C++23 compiler** (one with `<print>` support):
+  - **macOS** — Homebrew LLVM Clang
+  - **Linux** — GCC ≥ 14 or Clang ≥ 18
+  - **Windows** — MSVC (Visual Studio 2022) or clang-cl
+- **Emscripten** (`emcc` / `emcmake` on `PATH`) — only for the WebAssembly build
 
-All dependencies (SUNDIALS, Google Test, ImGui, ImPlot, **GLFW**) are included as git
-submodules — no system packages are required. GLFW is built from source unless a system
-install is already present.
+All third-party dependencies — SUNDIALS, Google Test, ImGui, ImPlot, **GLFW**, cereal,
+tinyfiledialogs — are bundled as git submodules, so no package manager is needed to pull
+them in. GLFW is built from source unless a system install is found.
 
 ```bash
-git clone --recurse-submodules <url>
+git clone --recurse-submodules https://github.com/samaffleck/mphys.git
 # already cloned without --recurse-submodules?
 git submodule update --init --recursive
 ```
 
+CMake presets live in `CMakePresets.json`, one set per platform (`mac`, `linux`,
+`windows`, `web`), each with a `-debug` and `-release` variant (plus a `-gui` *build*
+preset for GUI-only iteration). Presets are guarded by host OS, so `cmake --list-presets`
+only shows the ones relevant to your machine. The examples below use `-release`; swap in
+`-debug` for an unoptimised build with symbols.
+
 ## Build
 
-Presets are provided per platform (`mac`, `linux`, `windows`, `web`), each with a
-`-debug` and `-release` variant. Pick the one for your OS:
+### macOS
 
 ```bash
-cmake --preset mac-debug          # configure (macOS)
-cmake --build --preset mac-debug
+brew install cmake ninja llvm          # the mac-* presets use Homebrew LLVM clang
 
-cmake --preset linux-release      # Linux
+cmake --preset mac-release
+cmake --build --preset mac-release
+```
+
+### Linux
+
+The desktop GUI links against X11 + OpenGL, so install those development headers
+alongside the toolchain (GLFW is built X11-only from source, so no Wayland packages are
+needed):
+
+```bash
+# Debian / Ubuntu
+sudo apt-get install -y cmake ninja-build gcc-14 g++-14 xorg-dev libgl1-mesa-dev
+
+# Fedora
+sudo dnf install -y cmake ninja-build gcc-c++ mesa-libGL-devel \
+    libX11-devel libXrandr-devel libXinerama-devel libXcursor-devel libXi-devel
+
+CC=gcc-14 CXX=g++-14 cmake --preset linux-release
 cmake --build --preset linux-release
+```
 
-cmake --preset windows-release    # Windows (from a Developer/Ninja shell)
+The `linux-*` presets use whatever compiler is on `PATH`; set `CC`/`CXX` (as above) if
+your default `gcc` is older than 14. To build the library headless (no GUI / X11
+dependency), add `-DBUILD_GUI=OFF` to the configure step.
+
+### Windows
+
+Build with the MSVC toolchain. Open an **"x64 Native Tools Command Prompt for VS 2022"**
+(or run `vcvars64.bat`) so `cl.exe` and Ninja are on `PATH`, then:
+
+```bat
+cmake --preset windows-release
 cmake --build --preset windows-release
 ```
 
-To build the GUI only (faster iteration): append `-gui`, e.g. `cmake --build --preset mac-debug-gui`.
+Ninja ships with the Visual Studio "Desktop development with C++" workload; otherwise
+install it with `winget install Ninja-build.Ninja`.
 
 ### WebAssembly (browser)
 
-The web build is driven through Emscripten's `emcmake` wrapper, which injects the
-toolchain:
+Install Emscripten — via [emsdk](https://emscripten.org/docs/getting_started/downloads.html)
+or `brew install emscripten` — so `emcmake` is on `PATH`. The build runs through the
+`emcmake` wrapper, which injects the Emscripten toolchain (the preset itself stays
+toolchain-agnostic):
 
 ```bash
 emcmake cmake --preset web-release
 cmake --build --preset web-release-gui
 ```
 
-This produces `build/web-release/gui/mphys_gui.{html,js,wasm,data}`. Serve the folder
-over HTTP (the browser cannot load `wasm`/preloaded assets from `file://`):
+This emits `build/web-release/gui/mphys_gui.{html,js,wasm,data}`. WebAssembly can't be
+loaded from `file://`, so serve the folder over HTTP and open it in a browser:
 
 ```bash
 cd build/web-release/gui && python3 -m http.server 8000
-# then open http://localhost:8000/mphys_gui.html
+# open http://localhost:8000/mphys_gui.html
 ```
 
-The GUI's native file Open/Save dialogs are compiled out on the web (the browser
-sandbox has no filesystem access); the bundled examples remain available.
+Native file Open/Save dialogs are compiled out on the web (the browser sandbox has no
+filesystem access); the bundled example models remain available from the **File →
+Examples** menu.
+
+### GUI-only builds
+
+For faster iteration on GUI changes, append `-gui` to the *build* preset to rebuild just
+the `mphys_gui` target — e.g. `cmake --build --preset mac-release-gui` (likewise
+`linux-release-gui`, `web-release-gui`, and the `-debug` variants).
 
 Targets of interest:
 
@@ -81,8 +124,10 @@ Targets of interest:
 |--------|------|
 | `mphys_gui` | `build/<preset>/gui/mphys_gui` (`.html` on web) |
 | `mphys_tests` | `build/<preset>/tests/mphys_tests` |
-| `example_convection_diffusion` | `build/<preset>/examples/...` |
-| `example_spherical_diffusion` | `build/<preset>/examples/...` |
+| `example_convection_diffusion` | `build/<preset>/examples/example_convection_diffusion` |
+| `example_spherical_diffusion` | `build/<preset>/examples/example_spherical_diffusion` |
+| `example_single_particle_model` | `build/<preset>/examples/example_single_particle_model` |
+| `example_validation_1d_diffusion` | `build/<preset>/examples/example_validation_1d_diffusion` |
 
 ## Using mphys in your own project
 
