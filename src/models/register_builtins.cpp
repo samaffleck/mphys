@@ -165,6 +165,22 @@ ModelInfo SingleParticleInfo() {
   return m;
 }
 
+// ── Lithium-Ion Battery :: Single Particle Model with Electrolyte ────────────
+// Like SPM, SPMe builds its own meshes (two particles + a macroscopic
+// electrolyte sandwich) and has a bespoke results view, so it opts into custom
+// GUI and is catalogued here only to appear in the package tree.
+ModelInfo SingleParticleElectrolyteInfo() {
+  ModelInfo m;
+  m.id = "liion.spme";
+  m.package = "Lithium-Ion Battery";
+  m.name = "Single Particle Model with Electrolyte";
+  m.description = "SPM coupled to macroscopic electrolyte transport across the "
+                  "electrode/separator sandwich (PyBaMM SPMe).";
+  m.solver = SolverKind::kTransient;
+  m.custom_gui = true;
+  return m;
+}
+
 }  // namespace
 
 void RegisterBuiltinModels(ModelRegistry& registry) {
@@ -172,6 +188,7 @@ void RegisterBuiltinModels(ModelRegistry& registry) {
   registry.Register(SteadyDiffusionInfo());
   registry.Register(DarcyPackedBedInfo());
   registry.Register(SingleParticleInfo());
+  registry.Register(SingleParticleElectrolyteInfo());
 }
 
 }  // namespace mphys
