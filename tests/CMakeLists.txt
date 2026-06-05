@@ -12,6 +12,7 @@ add_executable(mphys_tests
     test_integration_transient.cpp
     test_spm.cpp
     test_spme.cpp
+    test_materials.cpp
     topology_test.cpp
     fvm_mesh_test.cpp
     mesh2d_test.cpp

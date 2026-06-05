@@ -23,6 +23,7 @@
 
 #include "mphys/boundary_condition.hpp"
 #include "mphys/fvm_operators.hpp"
+#include "mphys/materials/database.hpp"
 #include "mphys/mesh.hpp"
 #include "mphys/model.hpp"
 #include "mphys/models/model_registry.hpp"
@@ -256,7 +257,61 @@ struct SpmInputs {
   // Operating
   float I = 5.0f, T = 298.15f;             // current [A], temperature [K]
   int   n_cells = 30;                       // mesh points per particle
+  // Selected database materials (indices into the domain-filtered catalogues;
+  // see MaterialId helpers).  The electrode choice supplies the OCP curve and
+  // pre-fills the numeric fields above; the electrolyte choice the salt conc.
+  int   neg_material   = 0;                 // negative electrode
+  int   pos_material   = 0;                 // positive electrode
+  int   elyte_material = 0;                 // electrolyte
 };
+
+// --- Database material <-> GUI helpers ------------------------------------
+// The combos store an index into the (deterministic) domain-filtered id lists;
+// these map an index back to the strongly-typed identifier.
+static mphys::materials::ElectrodeId NegElectrodeId(int idx) {
+  const auto ids =
+      mphys::materials::Database::ElectrodeIds(mphys::materials::Domain::kNegativeElectrode);
+  if (idx < 0 || idx >= static_cast<int>(ids.size())) idx = 0;
+  return ids[idx];
+}
+static mphys::materials::ElectrodeId PosElectrodeId(int idx) {
+  const auto ids =
+      mphys::materials::Database::ElectrodeIds(mphys::materials::Domain::kPositiveElectrode);
+  if (idx < 0 || idx >= static_cast<int>(ids.size())) idx = 0;
+  return ids[idx];
+}
+static mphys::materials::ElectrolyteId ElectrolyteIdAt(int idx) {
+  const auto ids = mphys::materials::Database::ElectrolyteIds();
+  if (idx < 0 || idx >= static_cast<int>(ids.size())) idx = 0;
+  return ids[idx];
+}
+
+// Load a material's scalar properties into the editable input fields.
+static void ApplyNegElectrode(SpmInputs& in) {
+  const auto& m = mphys::materials::Database::Electrode(NegElectrodeId(in.neg_material));
+  in.cn_max = static_cast<float>(m.c_max);
+  in.D_n    = static_cast<float>(m.diffusivity);
+  in.k_n    = static_cast<float>(m.reaction_rate);
+}
+static void ApplyPosElectrode(SpmInputs& in) {
+  const auto& m = mphys::materials::Database::Electrode(PosElectrodeId(in.pos_material));
+  in.cp_max = static_cast<float>(m.c_max);
+  in.D_p    = static_cast<float>(m.diffusivity);
+  in.k_p    = static_cast<float>(m.reaction_rate);
+}
+
+// Full-width dropdown over a list of display names. Returns true if the
+// selection changed (and writes the new index into *idx).
+static bool MaterialCombo(const char* combo_id,
+                          const std::vector<std::string>& names, int* idx) {
+  if (*idx < 0 || *idx >= static_cast<int>(names.size())) *idx = 0;
+  std::vector<const char*> items;
+  items.reserve(names.size());
+  for (const auto& n : names) items.push_back(n.c_str());
+  ImGui::SetNextItemWidth(-1.0f);
+  return ImGui::Combo(combo_id, idx, items.data(),
+                      static_cast<int>(items.size()));
+}
 
 static mphys::models::SpmParameters ToSpmParameters(const SpmInputs& in) {
   mphys::models::SpmParameters p;
@@ -271,6 +326,11 @@ static mphys::models::SpmParameters ToSpmParameters(const SpmInputs& in) {
   p.c_e = in.c_e;
   p.k_n = in.k_n;     p.k_p = in.k_p;
   p.I = in.I;         p.T = in.T;
+  // Open-circuit potentials come from the selected electrode materials — they
+  // are curves, not editable scalars, so the database is their only source
+  // (this is what makes e.g. an LFP positive electrode behave correctly).
+  p.Un = mphys::materials::Database::Electrode(NegElectrodeId(in.neg_material)).ocp;
+  p.Up = mphys::materials::Database::Electrode(PosElectrodeId(in.pos_material)).ocp;
   return p;
 }
 
@@ -635,7 +695,10 @@ template<class Ar> void serialize(Ar& ar, SpmInputs& v) {
      cereal::make_nvp("c_e", v.c_e),
      cereal::make_nvp("k_n", v.k_n), cereal::make_nvp("k_p", v.k_p),
      cereal::make_nvp("I", v.I), cereal::make_nvp("T", v.T),
-     cereal::make_nvp("n_cells", v.n_cells));
+     cereal::make_nvp("n_cells", v.n_cells),
+     cereal::make_nvp("neg_material", v.neg_material),
+     cereal::make_nvp("pos_material", v.pos_material),
+     cereal::make_nvp("elyte_material", v.elyte_material));
 }
 
 template<class Ar> void serialize(Ar& ar, SpmeInputs& v) {
@@ -1215,6 +1278,32 @@ static void ShowGeometryView(AppState& s) {
 // Single Particle Model parameter editor.  Grouped by physical role; every
 // field is editable as a number or an expression (e.g. "5e-6", "0.84*33133").
 static void ShowSpmCoreInputs(SpmInputs& m, bool show_ce) {
+  // Material pickers — selecting a material loads its properties (and its OCP
+  // curve) into the fields below, which remain editable afterwards.
+  ImGui::SeparatorText("Materials");
+  ImGui::Spacing();
+  static const auto kNegNames = mphys::materials::Database::ElectrodeNames(
+      mphys::materials::Domain::kNegativeElectrode);
+  static const auto kPosNames = mphys::materials::Database::ElectrodeNames(
+      mphys::materials::Domain::kPositiveElectrode);
+  ImGui::TextUnformatted("Negative electrode");
+  if (MaterialCombo("##negmat", kNegNames, &m.neg_material)) ApplyNegElectrode(m);
+  ImGui::Spacing();
+  ImGui::TextUnformatted("Positive electrode");
+  if (MaterialCombo("##posmat", kPosNames, &m.pos_material)) ApplyPosElectrode(m);
+  if (show_ce) {
+    static const auto kElyteNames =
+        mphys::materials::Database::ElectrolyteNames();
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Electrolyte");
+    if (MaterialCombo("##elytemat", kElyteNames, &m.elyte_material)) {
+      m.c_e = static_cast<float>(
+          mphys::materials::Database::Electrolyte(ElectrolyteIdAt(m.elyte_material))
+              .c_typical);
+    }
+  }
+
+  ImGui::Spacing();
   ImGui::SeparatorText("Particle Geometry");
   ImGui::Spacing();
   LabeledFloat("Negative radius  R_n", "##Rn", &m.R_n, "m", "%.4g");
@@ -1303,6 +1392,22 @@ static void ShowSpmePhysics(AppState& s) {
 
   ImGui::Spacing();
   ImGui::SeparatorText("Electrolyte Transport");
+  ImGui::Spacing();
+  // Picking an electrolyte samples its concentration-dependent transport
+  // functions at the nominal salt concentration to fill the constant-property
+  // SPMe fields below.
+  static const auto kElyteNames = mphys::materials::Database::ElectrolyteNames();
+  ImGui::TextUnformatted("Electrolyte");
+  if (MaterialCombo("##spmeelyte", kElyteNames, &m.core.elyte_material)) {
+    const auto& e = mphys::materials::Database::Electrolyte(
+        ElectrolyteIdAt(m.core.elyte_material));
+    const double ce = e.c_typical;
+    m.ce0     = static_cast<float>(ce);
+    m.core.c_e = static_cast<float>(ce);
+    m.D_e     = static_cast<float>(e.diffusivity(ce, m.core.T));
+    m.kappa_e = static_cast<float>(e.conductivity(ce, m.core.T));
+    m.t_plus  = static_cast<float>(e.transference(ce, m.core.T));
+  }
   ImGui::Spacing();
   LabeledFloat("Salt diffusivity  D_e", "##De", &m.D_e, "m\xc2\xb2/s", "%.3e");
   ImGui::Spacing();
