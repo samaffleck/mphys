@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux (GCC 14)
+    runs-on: ubuntu-24.04
+    env:
+      CC: gcc-14
+      CXX: g++-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build gcc-14 g++-14
+
+      - name: Configure
+        run: cmake --preset linux-release
+
+      - name: Build
+        run: cmake --build --preset linux-release
+
+      - name: Test
+        run: ctest --test-dir build/linux-release -L mphys --output-on-failure
+
+      - name: Validation suite
+        run: ./build/linux-release/examples/example_validation_1d_diffusion
+
+  macos:
+    name: macOS (Homebrew LLVM)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install toolchain
+        run: brew install llvm ninja
+
+      # Build without the GUI so the runner needs no GLFW/OpenGL context.
+      - name: Configure
+        run: cmake --preset mac-release -DBUILD_GUI=OFF
+
+      - name: Build
+        run: cmake --build --preset mac-release
+
+      - name: Test
+        run: ctest --test-dir build/mac-release -L mphys --output-on-failure
+
+      - name: Validation suite
+        run: ./build/mac-release/examples/example_validation_1d_diffusion

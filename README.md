@@ -1,4 +1,11 @@
-# mphys
+<p align="center">
+  <img src="assets/logo.svg" alt="mphys" width="540">
+</p>
+
+<p align="center">
+  <a href="https://github.com/samaffleck/mphys/actions/workflows/ci.yml"><img src="https://github.com/samaffleck/mphys/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+</p>
 
 A C++23 finite volume library for solving 1D PDEs. Physics models are defined by subclassing `Model` and implementing a residual function; the library handles mesh generation, state management, and time integration via SUNDIALS.
 
@@ -12,23 +19,34 @@ A C++23 finite volume library for solving 1D PDEs. Physics models are defined by
 ## Requirements
 
 - CMake ≥ 3.25, Ninja
-- Clang with C++23 support (`/opt/homebrew/opt/llvm/bin/clang++`)
+- A C++23 compiler with `<print>` support:
+  - **macOS:** Homebrew LLVM Clang (`brew install llvm`) — the `mac-*` presets point at `/opt/homebrew/opt/llvm/bin/clang++`
+  - **Linux:** GCC ≥ 14 or Clang ≥ 18 (the `linux-*` presets use your default compiler from `PATH`)
 - GLFW (`brew install glfw`) — GUI only
 
 All other dependencies (SUNDIALS, Google Test, ImGui, ImPlot) are included as git submodules.
 
 ```bash
 git clone --recurse-submodules <url>
+# already cloned without --recurse-submodules?
+git submodule update --init --recursive
 ```
 
 ## Build
 
 ```bash
-cmake --preset mac-debug    # configure
+cmake --preset mac-debug    # configure (macOS)
 cmake --build --preset mac-debug
 
 cmake --preset mac-release
 cmake --build --preset mac-release
+```
+
+On Linux, use the `linux-*` presets (these default `BUILD_GUI=OFF`):
+
+```bash
+cmake --preset linux-release
+cmake --build --preset linux-release
 ```
 
 Targets of interest:
@@ -44,6 +62,34 @@ To build the GUI only (faster iteration):
 
 ```bash
 cmake --build --preset mac-debug-gui
+```
+
+## Using mphys in your own project
+
+mphys exposes a single umbrella header and a namespaced CMake target. The
+simplest way to depend on it is `FetchContent`:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(
+  mphys
+  GIT_REPOSITORY https://github.com/samaffleck/mphys.git
+  GIT_TAG        v1.0.0
+)
+set(BUILD_GUI OFF)        # skip the desktop app
+set(BUILD_TESTS OFF)
+set(BUILD_EXAMPLES OFF)
+FetchContent_MakeAvailable(mphys)
+
+target_link_libraries(my_app PRIVATE mphys::mphys)
+```
+
+You can also vendor the repo and `add_subdirectory(mphys)` directly. Either
+way, link against `mphys::mphys` and include the whole public API with one
+header:
+
+```cpp
+#include <mphys/mphys.hpp>
 ```
 
 ## Defining a physics model
@@ -97,6 +143,34 @@ Spherical coordinates require only a different mesh factory call — the `Residu
 auto mesh = mphys::MakeUniformMesh1D(1.0, 2.0, 100, mphys::CoordSystem::kSpherical);
 ```
 
+## Documentation
+
+The full API reference is generated from the header comments with
+[Doxygen](https://www.doxygen.nl/):
+
+```bash
+doxygen docs/Doxyfile          # writes build/docs/html/index.html
+open build/docs/html/index.html
+```
+
+It is also published to GitHub Pages on every push to `master` (see
+`.github/workflows/docs.yml`).
+
+## Testing
+
+```bash
+cmake --build --preset mac-debug --target mphys_tests
+ctest --test-dir build/mac-debug -L mphys --output-on-failure
+
+# Analytical convergence checks against closed-form solutions
+./build/mac-debug/examples/example_validation_1d_diffusion
+```
+
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for build,
+test, and style guidelines.
+
 ## License
 
-For academic and non-commercial use only. © 2026 Sam Affleck and contributors.
+Released under the [MIT License](LICENSE). © 2026 Sam Affleck and contributors.

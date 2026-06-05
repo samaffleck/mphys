@@ -1,0 +1,72 @@
+<svg width="720" height="220" viewBox="0 0 720 220" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="mphys">
+  <defs>
+    <!-- Diffusion field gradient: hot left -> cold right -->
+    <linearGradient id="field" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0"    stop-color="#ff5d5d"/>
+      <stop offset="0.45" stop-color="#ffb74d"/>
+      <stop offset="0.75" stop-color="#4dd0e1"/>
+      <stop offset="1"    stop-color="#5c6bff"/>
+    </linearGradient>
+    <linearGradient id="word" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0"   stop-color="#5c6bff"/>
+      <stop offset="1"   stop-color="#4dd0e1"/>
+    </linearGradient>
+    <clipPath id="cell">
+      <rect x="24" y="40" width="140" height="140" rx="14"/>
+    </clipPath>
+  </defs>
+
+  <!-- ===== Mark: a finite-volume cell holding a diffusing field ===== -->
+  <g clip-path="url(#cell)">
+    <!-- the continuous field inside the control volume -->
+    <rect x="24" y="40" width="140" height="140" fill="url(#field)" opacity="0.92"/>
+    <!-- FVM mesh: discrete cell faces overlaid on the field -->
+    <g stroke="#0e1726" stroke-width="2" opacity="0.28">
+      <line x1="59"  y1="40" x2="59"  y2="180"/>
+      <line x1="94"  y1="40" x2="94"  y2="180"/>
+      <line x1="129" y1="40" x2="129" y2="180"/>
+      <line x1="24"  y1="75"  x2="164" y2="75"/>
+      <line x1="24"  y1="110" x2="164" y2="110"/>
+      <line x1="24"  y1="145" x2="164" y2="145"/>
+    </g>
+    <!-- cell-centre nodes -->
+    <g fill="#0e1726" opacity="0.55">
+      <circle cx="41.5"  cy="57.5"  r="2.6"/>
+      <circle cx="76.5"  cy="57.5"  r="2.6"/>
+      <circle cx="111.5" cy="57.5"  r="2.6"/>
+      <circle cx="146.5" cy="57.5"  r="2.6"/>
+      <circle cx="41.5"  cy="92.5"  r="2.6"/>
+      <circle cx="76.5"  cy="92.5"  r="2.6"/>
+      <circle cx="111.5" cy="92.5"  r="2.6"/>
+      <circle cx="146.5" cy="92.5"  r="2.6"/>
+      <circle cx="41.5"  cy="127.5" r="2.6"/>
+      <circle cx="76.5"  cy="127.5" r="2.6"/>
+      <circle cx="111.5" cy="127.5" r="2.6"/>
+      <circle cx="146.5" cy="127.5" r="2.6"/>
+      <circle cx="41.5"  cy="162.5" r="2.6"/>
+      <circle cx="76.5"  cy="162.5" r="2.6"/>
+      <circle cx="111.5" cy="162.5" r="2.6"/>
+      <circle cx="146.5" cy="162.5" r="2.6"/>
+    </g>
+  </g>
+  <!-- control-volume boundary -->
+  <rect x="24" y="40" width="140" height="140" rx="14" fill="none" stroke="#0e1726" stroke-width="4"/>
+
+  <!-- flux arrow crossing a face: the conservative flux through the boundary -->
+  <g stroke="#0e1726" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="#0e1726">
+    <line x1="170" y1="110" x2="208" y2="110"/>
+    <path d="M204 102 L218 110 L204 118 Z"/>
+  </g>
+
+  <!-- ===== Wordmark ===== -->
+  <text x="246" y="138"
+        font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif"
+        font-size="96" font-weight="700" letter-spacing="-3"
+        fill="url(#word)">mphys</text>
+
+  <!-- tagline -->
+  <text x="250" y="170"
+        font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif"
+        font-size="21" font-weight="500" letter-spacing="5"
+        fill="#7a8699">FINITE&#160;VOLUME&#160;&#183;&#160;C++23</text>
+</svg>
