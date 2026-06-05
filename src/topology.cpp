@@ -200,4 +200,133 @@ Mesh MakeStructuredMesh2D(double x0, double x1, int nx,
   return mesh;
 }
 
+Mesh MakeStructuredMesh3D(double x0, double x1, int nx,
+                          double y0, double y1, int ny,
+                          double z0, double z1, int nz) {
+  assert(x1 > x0 && y1 > y0 && z1 > z0);
+  assert(nx > 0 && ny > 0 && nz > 0);
+
+  Mesh mesh;
+  mesh.dim = 3;
+  mesh.coord_system = CoordSystem::kCartesian;
+
+  const double dx = (x1 - x0) / nx;
+  const double dy = (y1 - y0) / ny;
+  const double dz = (z1 - z0) / nz;
+  const auto cell_index = [nx, ny](int i, int j, int k) {
+    return (k * ny + j) * nx + i;
+  };
+
+  // Cells.
+  mesh.cells.resize(nx * ny * nz);
+  for (int k = 0; k < nz; ++k) {
+    for (int j = 0; j < ny; ++j) {
+      for (int i = 0; i < nx; ++i) {
+        Cell& c = mesh.cells[cell_index(i, j, k)];
+        c.centroid = {x0 + (i + 0.5) * dx, y0 + (j + 0.5) * dy,
+                      z0 + (k + 0.5) * dz};
+        c.volume = dx * dy * dz;
+      }
+    }
+  }
+
+  const double area_x = dy * dz;  // face normal to x
+  const double area_y = dx * dz;  // face normal to y
+  const double area_z = dx * dy;  // face normal to z
+
+  // Internal faces normal to x.
+  for (int k = 0; k < nz; ++k)
+    for (int j = 0; j < ny; ++j)
+      for (int i = 0; i < nx - 1; ++i) {
+        Face f;
+        f.owner = cell_index(i, j, k);
+        f.neighbour = cell_index(i + 1, j, k);
+        f.area = area_x;
+        f.normal = {1.0, 0.0, 0.0};
+        f.centroid = {x0 + (i + 1) * dx, y0 + (j + 0.5) * dy, z0 + (k + 0.5) * dz};
+        f.delta = dx;
+        mesh.faces.push_back(f);
+      }
+  // Internal faces normal to y.
+  for (int k = 0; k < nz; ++k)
+    for (int j = 0; j < ny - 1; ++j)
+      for (int i = 0; i < nx; ++i) {
+        Face f;
+        f.owner = cell_index(i, j, k);
+        f.neighbour = cell_index(i, j + 1, k);
+        f.area = area_y;
+        f.normal = {0.0, 1.0, 0.0};
+        f.centroid = {x0 + (i + 0.5) * dx, y0 + (j + 1) * dy, z0 + (k + 0.5) * dz};
+        f.delta = dy;
+        mesh.faces.push_back(f);
+      }
+  // Internal faces normal to z.
+  for (int k = 0; k < nz - 1; ++k)
+    for (int j = 0; j < ny; ++j)
+      for (int i = 0; i < nx; ++i) {
+        Face f;
+        f.owner = cell_index(i, j, k);
+        f.neighbour = cell_index(i, j, k + 1);
+        f.area = area_z;
+        f.normal = {0.0, 0.0, 1.0};
+        f.centroid = {x0 + (i + 0.5) * dx, y0 + (j + 0.5) * dy, z0 + (k + 1) * dz};
+        f.delta = dz;
+        mesh.faces.push_back(f);
+      }
+
+  // Boundary patches: left, right, bottom, top, back, front.
+  mesh.patches.resize(6);
+  mesh.patches[0].name = "left";
+  mesh.patches[1].name = "right";
+  mesh.patches[2].name = "bottom";
+  mesh.patches[3].name = "top";
+  mesh.patches[4].name = "back";
+  mesh.patches[5].name = "front";
+
+  const auto add_boundary = [&](int p, int owner, double area, Vec3 normal,
+                                Vec3 centroid, double delta) {
+    Face f;
+    f.owner = owner;
+    f.neighbour = -1;
+    f.area = area;
+    f.normal = normal;
+    f.centroid = centroid;
+    f.delta = delta;
+    f.patch = p;
+    f.patch_face = static_cast<int>(mesh.patches[p].faces.size());
+    mesh.patches[p].faces.push_back(static_cast<int>(mesh.faces.size()));
+    mesh.faces.push_back(f);
+  };
+
+  // x-normal boundaries (left x0, right x1).
+  for (int k = 0; k < nz; ++k)
+    for (int j = 0; j < ny; ++j) {
+      const double yc = y0 + (j + 0.5) * dy, zc = z0 + (k + 0.5) * dz;
+      add_boundary(0, cell_index(0, j, k), area_x, {-1.0, 0.0, 0.0},
+                   {x0, yc, zc}, 0.5 * dx);
+      add_boundary(1, cell_index(nx - 1, j, k), area_x, {1.0, 0.0, 0.0},
+                   {x1, yc, zc}, 0.5 * dx);
+    }
+  // y-normal boundaries (bottom y0, top y1).
+  for (int k = 0; k < nz; ++k)
+    for (int i = 0; i < nx; ++i) {
+      const double xc = x0 + (i + 0.5) * dx, zc = z0 + (k + 0.5) * dz;
+      add_boundary(2, cell_index(i, 0, k), area_y, {0.0, -1.0, 0.0},
+                   {xc, y0, zc}, 0.5 * dy);
+      add_boundary(3, cell_index(i, ny - 1, k), area_y, {0.0, 1.0, 0.0},
+                   {xc, y1, zc}, 0.5 * dy);
+    }
+  // z-normal boundaries (back z0, front z1).
+  for (int j = 0; j < ny; ++j)
+    for (int i = 0; i < nx; ++i) {
+      const double xc = x0 + (i + 0.5) * dx, yc = y0 + (j + 0.5) * dy;
+      add_boundary(4, cell_index(i, j, 0), area_z, {0.0, 0.0, -1.0},
+                   {xc, yc, z0}, 0.5 * dz);
+      add_boundary(5, cell_index(i, j, nz - 1), area_z, {0.0, 0.0, 1.0},
+                   {xc, yc, z1}, 0.5 * dz);
+    }
+
+  return mesh;
+}
+
 }  // namespace mphys

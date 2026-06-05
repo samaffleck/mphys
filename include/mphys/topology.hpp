@@ -74,4 +74,13 @@ Mesh MakeMesh1D(double x0, double x1, int n_cells,
 Mesh MakeStructuredMesh2D(double x0, double x1, int nx,
                           double y0, double y1, int ny);
 
+// Factory: uniform 3D Cartesian mesh over [x0,x1] x [y0,y1] x [z0,z1] with
+// nx x ny x nz cells. Cells are stored with index = (k*ny + j)*nx + i. Produces
+// six boundary patches named "left" (x0), "right" (x1), "bottom" (y0),
+// "top" (y1), "back" (z0), "front" (z1). The same face-based fvm:: operators
+// run on this mesh unchanged.
+Mesh MakeStructuredMesh3D(double x0, double x1, int nx,
+                          double y0, double y1, int ny,
+                          double z0, double z1, int nz);
+
 }  // namespace mphys

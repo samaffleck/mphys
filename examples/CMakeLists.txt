@@ -27,3 +27,8 @@ add_executable(example_reactor_2d
     reactor_2d/main.cpp
 )
 target_link_libraries(example_reactor_2d PRIVATE mphys_lib)
+
+add_executable(example_heat_3d
+    heat_3d/main.cpp
+)
+target_link_libraries(example_heat_3d PRIVATE mphys_lib)
