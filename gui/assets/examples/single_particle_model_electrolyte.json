@@ -1,7 +1,7 @@
 {
     "mphys_state": {
-        "physics": 2,
-        "coord_system": 0,
+        "physics": 4,
+        "coord_system": 2,
         "geo": {
             "nodes": [
                 {
@@ -13,7 +13,7 @@
             ],
             "domains": [
                 {
-                    "n_cells": 100,
+                    "n_cells": 30,
                     "D": 1.0,
                     "u": 0.0,
                     "k": 0.0,
@@ -63,7 +63,10 @@
             "k_p": 3.42e-6,
             "I": 5.0,
             "T": 298.15,
-            "n_cells": 30
+            "n_cells": 30,
+            "neg_material": 0,
+            "pos_material": 0,
+            "elyte_material": 0
         },
         "spme": {
             "core": {
@@ -85,7 +88,10 @@
                 "k_p": 3.42e-6,
                 "I": 5.0,
                 "T": 298.15,
-                "n_cells": 30
+                "n_cells": 30,
+                "neg_material": 0,
+                "pos_material": 0,
+                "elyte_material": 0
             },
             "L_s": 12e-6,
             "eps_e_n": 0.25,
@@ -102,12 +108,12 @@
             "n_s": 15,
             "n_p": 25
         },
-        "t_end": 10.0,
-        "dt_initial": 0.0010000000474974514,
-        "dt_max": 0.10000000149011612,
-        "dt_snapshot": 1.0,
-        "rel_tol": 9.999999974752428e-7,
-        "abs_tol": 9.99999993922529e-9,
+        "t_end": 3600.0,
+        "dt_initial": 0.01,
+        "dt_max": 20.0,
+        "dt_snapshot": 20.0,
+        "rel_tol": 1e-7,
+        "abs_tol": 1e-7,
         "dark_theme": true
     }
 }

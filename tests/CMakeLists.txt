@@ -11,6 +11,8 @@ add_executable(mphys_tests
     test_integration_steady.cpp
     test_integration_transient.cpp
     test_spm.cpp
+    test_spme.cpp
+    test_materials.cpp
 )
 
 target_link_libraries(mphys_tests
