@@ -25,6 +25,7 @@
 #include "mphys/fvm_operators.hpp"
 #include "mphys/mesh.hpp"
 #include "mphys/model.hpp"
+#include "mphys/models/model_registry.hpp"
 #include "mphys/models/spm.hpp"
 #include "mphys/models/spme.hpp"
 #include "mphys/sim_result.hpp"
@@ -203,113 +204,15 @@ static bool LabeledInt(const char* label, const char* id, int* v,
   return ch;
 }
 
-// ============================================================
-// Physics model definitions
-// ============================================================
+// Physics models now live in the mphys library (mphys/models/*) and are
+// discovered through the model registry; see BuiltinModels().
 
-// Transient convection-diffusion-reaction with spatially-varying coefficients.
-class ConvDiffModel : public mphys::Model {
- public:
-  ConvDiffModel(const mphys::Mesh1D& mesh, mphys::StateVector& sv,
-                mphys::Field D_face, mphys::Field u_face,
-                std::vector<double> k_cell,
-                mphys::BoundaryCondition left_bc, mphys::BoundaryCondition right_bc)
-      : Model(mesh, sv),
-        D_face_(std::move(D_face)),
-        u_face_(std::move(u_face)),
-        k_cell_(std::move(k_cell)) {
-    c_ = AddField("c", 0.0);
-    SetBcs(c_, {left_bc, right_bc});
-  }
-
-  void Residual(double,
-                const std::vector<mphys::Field>& y,
-                const std::vector<mphys::Field>& ydot,
-                const std::vector<double>&, const std::vector<double>&,
-                std::vector<mphys::Field>& rr, std::vector<double>&) override {
-    rr[c_] = mphys::fvm::Ddt(ydot[c_])
-           + mphys::fvm::Convection(y[c_], u_face_, mesh_, bcs_[c_])
-           - mphys::fvm::Laplacian(y[c_], D_face_, mesh_, bcs_[c_]);
-    for (int i = 0; i < mesh_.n_cells; ++i)
-      rr[c_][i] += y[c_][i] * k_cell_[i];
-  }
-
- private:
-  int c_ = 0;
-  mphys::Field D_face_, u_face_;
-  std::vector<double> k_cell_;
-};
-
-// Steady diffusion with spatially-varying face diffusivity.
-class SteadyDiffModel : public mphys::Model {
- public:
-  SteadyDiffModel(const mphys::Mesh1D& mesh, mphys::StateVector& sv,
-                  mphys::Field D_face,
-                  mphys::BoundaryCondition left_bc, mphys::BoundaryCondition right_bc)
-      : Model(mesh, sv), D_face_(std::move(D_face)) {
-    double init = 0.5 * (left_bc.value + right_bc.value);
-    c_ = AddField("c", init);
-    SetBcs(c_, {left_bc, right_bc});
-  }
-
-  void Residual(double,
-                const std::vector<mphys::Field>& y,
-                const std::vector<mphys::Field>&,
-                const std::vector<double>&, const std::vector<double>&,
-                std::vector<mphys::Field>& rr, std::vector<double>&) override {
-    rr[c_] = -mphys::fvm::Laplacian(y[c_], D_face_, mesh_, bcs_[c_]);
-  }
-
- private:
-  int c_ = 0;
-  mphys::Field D_face_;
-};
-
-// 1D packed bed with Darcy's law + ideal-gas mass balance.
-// Two coupled equations kept explicit:
-//   (1) Darcy's Law  (algebraic): u + (κ/μ)·∂P/∂x = 0
-//   (2) Mass balance (transient): ∂P/∂t + ∂(P·u)/∂x = 0
-class DarcyPackedBedModel : public mphys::Model {
- public:
-  DarcyPackedBedModel(const mphys::Mesh1D& mesh, mphys::StateVector& sv,
-                      std::vector<double> kappa,  // per-cell permeability [m²]
-                      std::vector<double> mu,     // per-cell viscosity    [Pa·s]
-                      const std::vector<double>& P_init,  // per-cell initial pressure
-                      mphys::BoundaryCondition P_lbc, mphys::BoundaryCondition P_rbc,
-                      mphys::BoundaryCondition u_lbc, mphys::BoundaryCondition u_rbc)
-      : Model(mesh, sv), kappa_(std::move(kappa)), mu_(std::move(mu)) {
-    P_ = AddField("P", 0.0);
-    u_ = AddField("u", 0.0);
-    auto& Pf = fields()[P_];
-    for (int i = 0; i < mesh_.n_cells; ++i) Pf[i] = P_init[i];
-    sv_.MarkFieldAlgebraic("u");   // Darcy has no ∂u/∂t — u is algebraic
-    SetBcs(P_, {P_lbc, P_rbc});
-    SetBcs(u_, {u_lbc, u_rbc});
-  }
-
-  void Residual(double,
-                const std::vector<mphys::Field>& y,
-                const std::vector<mphys::Field>& ydot,
-                const std::vector<double>&, const std::vector<double>&,
-                std::vector<mphys::Field>& rr, std::vector<double>&) override {
-    // ── Darcy's Law (algebraic) ──────────────────────────────────────────────
-    //   u + (κ/μ) · ∂P/∂x = 0
-    auto grad_P = mphys::fvm::Grad(y[P_], mesh_, bcs_[P_]);
-    for (int i = 0; i < mesh_.n_cells; ++i) {
-      double dPdx = 0.5 * (grad_P[i] + grad_P[i + 1]);  // cell-centre gradient
-      rr[u_][i] = y[u_][i] + (kappa_[i] / mu_[i]) * dPdx;
-    }
-    // ── Ideal-gas mass balance (ρ = PM/RT, T constant → ρ ∝ P) ─────────────
-    //   ∂P/∂t + ∂(P·u)/∂x = 0
-    auto u_face = mphys::fvm::InterpolateToFaces(y[u_], mesh_, bcs_[u_]);
-    rr[P_] = mphys::fvm::Ddt(ydot[P_])
-           + mphys::fvm::Convection(y[P_], u_face, mesh_, bcs_[P_]);
-  }
-
- private:
-  int P_ = 0, u_ = 1;
-  std::vector<double> kappa_, mu_;
-};
+// Stable model ids from the registry, used for GUI dispatch.
+static constexpr const char* kConvDiffId   = "transport.conv_diff_reaction";
+static constexpr const char* kSteadyDiffId = "transport.steady_diffusion";
+static constexpr const char* kDarcyId      = "fluid_flow.darcy_packed_bed";
+static constexpr const char* kSpmId        = "liion.spm";
+static constexpr const char* kSpmeId       = "liion.spme";
 
 // ============================================================
 // Geometry and application state
@@ -317,25 +220,11 @@ class DarcyPackedBedModel : public mphys::Model {
 
 struct GeoNode   { float x = 0.0f; };
 
+// Per-domain physics parameters, keyed by the active model's ParamSpec::key.
+// Values are filled from the model schema's defaults by EnsureModelConfig().
 struct GeoDomain {
-  int   n_cells = 20;
-  // Convection-Diffusion-Reaction
-  float D     = 1.0f;    // diffusivity   [m²/s]
-  float u     = 0.0f;    // velocity      [m/s]
-  float k     = 0.0f;    // reaction rate [1/s]
-  // Darcy Packed Bed
-  float kappa = 1e-10f;  // permeability  [m²]
-  float mu    = 1.8e-5f; // dyn. viscosity [Pa·s]
-};
-
-struct NodeBc {
-  int   type  = 0;    // 0 = Dirichlet, 1 = Neumann
-  float value = 0.0f;
-};
-
-struct PackedBedBc {
-  int   type  = 0;    // 0 = Pressure, 1 = Velocity
-  float value = 0.0f;
+  int n_cells = 20;
+  std::map<std::string, float> params;
 };
 
 struct Geometry1D {
@@ -347,8 +236,6 @@ struct Geometry1D {
 };
 
 enum class NavNode { Geometry, Physics, Mesh, Study, Results };
-enum class PhysicsModule { ConvectionDiffusion, SteadyDiffusion, DarcyPackedBed,
-                           SingleParticle, SingleParticleElectrolyte };
 
 // User-facing Single Particle Model inputs (floats for ImGui widgets).
 // Defaults are representative LG M50 (Chen 2020) values.
@@ -421,14 +308,14 @@ static mphys::models::SpmeParameters ToSpmeParameters(const SpmeInputs& in) {
 }
 
 struct AppState {
-  NavNode       nav     = NavNode::Geometry;
-  PhysicsModule physics = PhysicsModule::ConvectionDiffusion;
+  NavNode     nav = NavNode::Geometry;
+  std::string model_id = kConvDiffId;
 
   mphys::CoordSystem coord_system = mphys::CoordSystem::kCartesian;
 
   Geometry1D geo = {
     {{0.0f}, {1.0f}},
-    {{20, 1.0f, 0.0f, 0.0f}},
+    {{20, {}}},
     false, -1, -1
   };
 
@@ -436,11 +323,9 @@ struct AppState {
   std::vector<float> geo_lengths = {1.0f};
   int geo_unit = 0;                              // 0=m  1=cm  2=mm  3=µm
 
-  NodeBc left_bc  = {0, 1.0f};
-  NodeBc right_bc = {1, 0.0f};
-  // Darcy packed bed BCs (pressure or velocity at each terminal node)
-  PackedBedBc pb_left_bc  = {0, 2.0f};   // Pressure = 2 (high)
-  PackedBedBc pb_right_bc = {0, 1.0f};   // Pressure = 1 (low)
+  // Boundary-condition choices keyed by the active model's BcSlot::key.
+  // Filled from the model schema's defaults by EnsureModelConfig().
+  std::map<std::string, mphys::BcChoice> bcs;
 
   float t_end        = 50.0f;
   float dt_initial   = 1e-3f;
@@ -465,7 +350,7 @@ struct AppState {
 };
 
 // ============================================================
-// Face-field computation helpers
+// Model configuration helpers
 // ============================================================
 
 // Returns cell-domain index for every cell in the composite mesh.
@@ -478,65 +363,25 @@ static std::vector<int> CellDomainMap(const Geometry1D& geo) {
   return m;
 }
 
-// Harmonic-mean face diffusivity accounting for heterogeneous dx.
-// D_face[i] for interior face i uses cells i-1 (left) and i (right).
-static mphys::Field ComputeFaceD(const Geometry1D& geo, const mphys::Mesh1D& mesh) {
-  auto dom = CellDomainMap(geo);
-  int  n   = mesh.n_cells;
-  mphys::Field D_face("D_face", n + 1);
-  D_face[0] = geo.domains[dom[0]].D;
-  D_face[n] = geo.domains[dom[n - 1]].D;
-  for (int i = 1; i < n; ++i) {
-    double D_L  = geo.domains[dom[i - 1]].D;
-    double D_R  = geo.domains[dom[i]].D;
-    double dx_L = mesh.dx[i - 1];
-    double dx_R = mesh.dx[i];
-    // Resistance-weighted harmonic mean: D = (dxL+dxR) / (dxL/DL + dxR/DR)
-    D_face[i] = (dx_L + dx_R) / (dx_L / D_L + dx_R / D_R);
+// Ensure every domain and boundary slot has a value for the active model's
+// parameters, filling any missing entries from the schema defaults. Existing
+// values are preserved (so switching models keeps shared parameters). Falls
+// back to the first registered model if model_id is unknown (e.g. legacy save).
+static const mphys::ModelInfo* EnsureModelConfig(AppState& s) {
+  auto& reg = mphys::BuiltinModels();
+  const mphys::ModelInfo* info = reg.Find(s.model_id);
+  if (!info) {
+    if (reg.All().empty()) return nullptr;
+    info = &reg.All().front();
+    s.model_id = info->id;
   }
-  return D_face;
-}
-
-// Distance-weighted arithmetic-mean face velocity.
-static mphys::Field ComputeFaceU(const Geometry1D& geo, const mphys::Mesh1D& mesh) {
-  auto dom = CellDomainMap(geo);
-  int  n   = mesh.n_cells;
-  mphys::Field u_face("u_face", n + 1);
-  u_face[0] = geo.domains[dom[0]].u;
-  u_face[n] = geo.domains[dom[n - 1]].u;
-  for (int i = 1; i < n; ++i) {
-    double u_L  = geo.domains[dom[i - 1]].u;
-    double u_R  = geo.domains[dom[i]].u;
-    double dx_L = mesh.dx[i - 1];
-    double dx_R = mesh.dx[i];
-    u_face[i] = (u_R * dx_L + u_L * dx_R) / (dx_L + dx_R);
-  }
-  return u_face;
-}
-
-// Cell-centred reaction rate.
-static std::vector<double> ComputeCellK(const Geometry1D& geo) {
-  std::vector<double> k;
-  for (const auto& d : geo.domains)
-    for (int i = 0; i < d.n_cells; ++i)
-      k.push_back(d.k);
-  return k;
-}
-
-static std::vector<double> ComputeCellKappa(const Geometry1D& geo) {
-  std::vector<double> v;
-  for (const auto& d : geo.domains)
-    for (int i = 0; i < d.n_cells; ++i)
-      v.push_back(d.kappa);
-  return v;
-}
-
-static std::vector<double> ComputeCellMu(const Geometry1D& geo) {
-  std::vector<double> v;
-  for (const auto& d : geo.domains)
-    for (int i = 0; i < d.n_cells; ++i)
-      v.push_back(d.mu);
-  return v;
+  for (auto& dom : s.geo.domains)
+    for (const auto& p : info->schema.params)
+      if (p.scope == mphys::ParamScope::kPerDomain)
+        dom.params.try_emplace(p.key, static_cast<float>(p.default_value));
+  for (const auto& b : info->schema.boundaries)
+    s.bcs.try_emplace(b.key, mphys::BcChoice{b.default_option, b.default_value});
+  return info;
 }
 
 // ============================================================
@@ -682,10 +527,14 @@ static void RunSimulation(AppState& s) {
   s.spm_voltage.clear();
   s.status_msg = "Running...";
 
-  if (s.physics == PhysicsModule::SingleParticle) { RunSpm(s); return; }
-  if (s.physics == PhysicsModule::SingleParticleElectrolyte) { RunSpme(s); return; }
-
   try {
+    const mphys::ModelInfo* info = EnsureModelConfig(s);
+    if (!info) throw std::runtime_error("No physics model is registered");
+
+    // Models that build their own geometry/results run through a custom path.
+    if (s.model_id == kSpmId)  { RunSpm(s);  return; }
+    if (s.model_id == kSpmeId) { RunSpme(s); return; }
+
     if (!s.geo.built || s.geo.domains.empty())
       throw std::runtime_error("Build the geometry first (Geometry -> Build)");
     for (int d = 0; d < (int)s.geo.domains.size(); ++d)
@@ -694,16 +543,7 @@ static void RunSimulation(AppState& s) {
 
     auto mesh  = BuildCompositeMesh(s.geo, s.coord_system);
     s.cell_centres = mesh.cell_centres;
-
-    auto D_face = ComputeFaceD(s.geo, mesh);
-    auto u_face = ComputeFaceU(s.geo, mesh);
-    auto k_cell = ComputeCellK(s.geo);
-
-    auto make_bc = [](const NodeBc& nb) -> mphys::BoundaryCondition {
-      return nb.type == 0 ? mphys::DirichletBc(nb.value) : mphys::NeumannBc(nb.value);
-    };
-    auto lbc = make_bc(s.left_bc);
-    auto rbc = make_bc(s.right_bc);
+    auto cell_domain = CellDomainMap(s.geo);
 
     mphys::SolverOptions opts;
     opts.tolerance.relative = static_cast<double>(s.rel_tol);
@@ -714,62 +554,26 @@ static void RunSimulation(AppState& s) {
     mphys::SunContext  sunctx;
     mphys::StateVector sv(mesh.n_cells);
 
+    // The factory pulls per-domain parameters and boundary choices through
+    // these lookups, expanding them to the per-cell / per-face data it needs.
+    auto param_lookup = [&s](int d, const std::string& key) -> double {
+      const auto& m = s.geo.domains[d].params;
+      auto it = m.find(key);
+      return it != m.end() ? static_cast<double>(it->second) : 0.0;
+    };
+    auto bc_lookup = [&s](const std::string& slot) -> mphys::BcChoice {
+      auto it = s.bcs.find(slot);
+      return it != s.bcs.end() ? it->second : mphys::BcChoice{};
+    };
+    mphys::ModelBuildContext ctx(mesh, sv, std::move(cell_domain),
+                                 param_lookup, bc_lookup);
+    auto model = info->factory(ctx);
+
     double dt_snap = std::max(static_cast<double>(s.dt_snapshot),
                                static_cast<double>(s.dt_max));
     std::string solver_warning;
-    if (s.physics == PhysicsModule::DarcyPackedBed) {
-      auto kappa_cell = ComputeCellKappa(s.geo);
-      auto mu_cell    = ComputeCellMu(s.geo);
-
-      double kL = s.geo.domains.front().kappa, muL = s.geo.domains.front().mu;
-      double kR = s.geo.domains.back().kappa,  muR = s.geo.domains.back().mu;
-
-      // Pressure BC → Dirichlet on P; Velocity BC → Neumann on P (from Darcy)
-      auto make_P_bc = [](const PackedBedBc& bc, double kp, double mp) {
-        return bc.type == 0 ? mphys::DirichletBc(bc.value)
-                            : mphys::NeumannBc(-mp * bc.value / kp);
-      };
-      // Velocity BC → Dirichlet on u; Pressure BC → Neumann on u (free)
-      auto make_u_bc = [](const PackedBedBc& bc) {
-        return bc.type == 1 ? mphys::DirichletBc(bc.value)
-                            : mphys::NeumannBc(0.0);
-      };
-
-      auto P_lbc = make_P_bc(s.pb_left_bc,  kL, muL);
-      auto P_rbc = make_P_bc(s.pb_right_bc, kR, muR);
-      auto u_lbc = make_u_bc(s.pb_left_bc);
-      auto u_rbc = make_u_bc(s.pb_right_bc);
-
-      // Initialise P with a linear profile so IDACalcIC has a consistent starting point.
-      double P_scalar = (s.pb_left_bc.type == 0) ? s.pb_left_bc.value
-                      : (s.pb_right_bc.type == 0) ? s.pb_right_bc.value
-                      : 101325.0;
-      double P_L_val  = (s.pb_left_bc.type  == 0) ? (double)s.pb_left_bc.value  : P_scalar;
-      double P_R_val  = (s.pb_right_bc.type == 0) ? (double)s.pb_right_bc.value : P_scalar;
-      std::vector<double> P_init_vec(mesh.n_cells);
-      {
-        double x_L = mesh.cell_centres.front(), x_R = mesh.cell_centres.back();
-        double span = (x_R > x_L) ? (x_R - x_L) : 1.0;
-        for (int i = 0; i < mesh.n_cells; ++i)
-          P_init_vec[i] = P_L_val + (P_R_val - P_L_val) *
-                          (mesh.cell_centres[i] - x_L) / span;
-      }
-
-      DarcyPackedBedModel model(mesh, sv, kappa_cell, mu_cell, P_init_vec,
-                                P_lbc, P_rbc, u_lbc, u_rbc);
-      mphys::TransientSolver solver(model, opts, sunctx);
-      double next_snap = 0.0;
-      solver_warning = solver.Solve(0.0, static_cast<double>(s.t_end),
-          [&](double t, const std::vector<mphys::Field>& f,
-              const std::vector<double>& a) {
-            if (t >= next_snap - 1e-12) {
-              s.result.Record(t, f, a);
-              next_snap += dt_snap;
-            }
-          });
-    } else if (s.physics == PhysicsModule::ConvectionDiffusion) {
-      ConvDiffModel model(mesh, sv, D_face, u_face, k_cell, lbc, rbc);
-      mphys::TransientSolver solver(model, opts, sunctx);
+    if (info->solver == mphys::SolverKind::kTransient) {
+      mphys::TransientSolver solver(*model, opts, sunctx);
       double next_snap = 0.0;
       solver_warning = solver.Solve(0.0, static_cast<double>(s.t_end),
           [&](double t, const std::vector<mphys::Field>& f,
@@ -780,10 +584,9 @@ static void RunSimulation(AppState& s) {
             }
           });
     } else {
-      SteadyDiffModel model(mesh, sv, D_face, lbc, rbc);
-      mphys::SteadySolver solver(model, opts, sunctx);
+      mphys::SteadySolver solver(*model, opts, sunctx);
       solver.Solve();
-      s.result.Record(0.0, model.fields(), model.algebraics());
+      s.result.Record(0.0, model->fields(), model->algebraics());
     }
 
     if (!s.result.snapshots.empty()) {
@@ -812,21 +615,7 @@ template<class Ar> void serialize(Ar& ar, GeoNode& v) {
 
 template<class Ar> void serialize(Ar& ar, GeoDomain& v) {
   ar(cereal::make_nvp("n_cells", v.n_cells),
-     cereal::make_nvp("D",       v.D),
-     cereal::make_nvp("u",       v.u),
-     cereal::make_nvp("k",       v.k),
-     cereal::make_nvp("kappa",   v.kappa),
-     cereal::make_nvp("mu",      v.mu));
-}
-
-template<class Ar> void serialize(Ar& ar, NodeBc& v) {
-  ar(cereal::make_nvp("type",  v.type),
-     cereal::make_nvp("value", v.value));
-}
-
-template<class Ar> void serialize(Ar& ar, PackedBedBc& v) {
-  ar(cereal::make_nvp("type",  v.type),
-     cereal::make_nvp("value", v.value));
+     cereal::make_nvp("params",  v.params));
 }
 
 template<class Ar> void serialize(Ar& ar, Geometry1D& v) {
@@ -862,18 +651,23 @@ template<class Ar> void serialize(Ar& ar, SpmeInputs& v) {
      cereal::make_nvp("n_p", v.n_p));
 }
 
-// Split save/load for AppState so enums round-trip cleanly as ints.
+// In mphys namespace so cereal finds it via ADL on mphys::BcChoice.
+namespace mphys {
+template<class Ar> void serialize(Ar& ar, BcChoice& v) {
+  ar(cereal::make_nvp("option", v.option),
+     cereal::make_nvp("value",  v.value));
+}
+}  // namespace mphys
+
+// Split save/load for AppState so the coord-system enum round-trips as an int.
 template<class Ar> void save(Ar& ar, const AppState& v) {
-  ar(cereal::make_nvp("physics",        static_cast<int>(v.physics)),
+  ar(cereal::make_nvp("model_id",       v.model_id),
      cereal::make_nvp("coord_system",   static_cast<int>(v.coord_system)),
      cereal::make_nvp("geo",            v.geo),
      cereal::make_nvp("geo_input_mode", v.geo_input_mode),
      cereal::make_nvp("geo_lengths",    v.geo_lengths),
      cereal::make_nvp("geo_unit",       v.geo_unit),
-     cereal::make_nvp("left_bc",        v.left_bc),
-     cereal::make_nvp("right_bc",       v.right_bc),
-     cereal::make_nvp("pb_left_bc",     v.pb_left_bc),
-     cereal::make_nvp("pb_right_bc",    v.pb_right_bc),
+     cereal::make_nvp("bcs",            v.bcs),
      cereal::make_nvp("spm",            v.spm),
      cereal::make_nvp("spme",           v.spme),
      cereal::make_nvp("t_end",          v.t_end),
@@ -886,17 +680,14 @@ template<class Ar> void save(Ar& ar, const AppState& v) {
 }
 
 template<class Ar> void load(Ar& ar, AppState& v) {
-  int physics_i = 0, coord_i = 0;
-  ar(cereal::make_nvp("physics",        physics_i),
+  int coord_i = 0;
+  ar(cereal::make_nvp("model_id",       v.model_id),
      cereal::make_nvp("coord_system",   coord_i),
      cereal::make_nvp("geo",            v.geo),
      cereal::make_nvp("geo_input_mode", v.geo_input_mode),
      cereal::make_nvp("geo_lengths",    v.geo_lengths),
      cereal::make_nvp("geo_unit",       v.geo_unit),
-     cereal::make_nvp("left_bc",        v.left_bc),
-     cereal::make_nvp("right_bc",       v.right_bc),
-     cereal::make_nvp("pb_left_bc",     v.pb_left_bc),
-     cereal::make_nvp("pb_right_bc",    v.pb_right_bc),
+     cereal::make_nvp("bcs",            v.bcs),
      cereal::make_nvp("spm",            v.spm),
      cereal::make_nvp("spme",           v.spme),
      cereal::make_nvp("t_end",          v.t_end),
@@ -906,7 +697,6 @@ template<class Ar> void load(Ar& ar, AppState& v) {
      cereal::make_nvp("rel_tol",        v.rel_tol),
      cereal::make_nvp("abs_tol",        v.abs_tol),
      cereal::make_nvp("dark_theme",     v.dark_theme));
-  v.physics      = static_cast<PhysicsModule>(physics_i);
   v.coord_system = static_cast<mphys::CoordSystem>(coord_i);
 }
 
@@ -933,6 +723,7 @@ static void LoadState(AppState& s, const std::string& path) {
   s.plot_time   = 0.0f;
   s.status_msg.clear();
   s.geo.selected_node = s.geo.selected_domain = -1;
+  EnsureModelConfig(s);  // fill any parameters/BCs the saved file omitted
 }
 
 // ============================================================
@@ -963,7 +754,7 @@ static void ShowGeometryPanel(AppState& s) {
   static constexpr const char* kUnits[] = {"m", "cm", "mm", "\xc2\xb5m"};
   Geometry1D& geo = s.geo;
 
-  if (s.physics == PhysicsModule::SingleParticle) {
+  if (s.model_id == kSpmId) {
     ImGui::SeparatorText("Single Particle Model");
     ImGui::Spacing();
     ImGui::TextWrapped(
@@ -976,7 +767,7 @@ static void ShowGeometryPanel(AppState& s) {
     return;
   }
 
-  if (s.physics == PhysicsModule::SingleParticleElectrolyte) {
+  if (s.model_id == kSpmeId) {
     ImGui::SeparatorText("Single Particle Model w/ Electrolyte");
     ImGui::Spacing();
     ImGui::TextWrapped(
@@ -1188,7 +979,7 @@ static void ShowGeometryView(AppState& s) {
   float       cw   = ImGui::GetWindowWidth();
   float       ch   = ImGui::GetWindowHeight();
 
-  if (s.physics == PhysicsModule::SingleParticle) {
+  if (s.model_id == kSpmId) {
     // Schematic of the two representative particles, sized by relative radius.
     float cy   = orig.y + ch * 0.5f;
     float rmax = std::max(s.spm.R_n, s.spm.R_p);
@@ -1226,7 +1017,7 @@ static void ShowGeometryView(AppState& s) {
     return;
   }
 
-  if (s.physics == PhysicsModule::SingleParticleElectrolyte) {
+  if (s.model_id == kSpmeId) {
     // Cell sandwich (negative | separator | positive) with the two
     // representative particles drawn above their electrodes.
     const SpmeInputs& m = s.spme;
@@ -1532,42 +1323,63 @@ static void ShowSpmePhysics(AppState& s) {
 }
 
 static void ShowPhysicsPanel(AppState& s) {
-  static constexpr const char* kMods[] = {
-      "Convection-Diffusion-Reaction",
-      "Steady Diffusion",
-      "Darcy Packed Bed",
-      "Single Particle Model",
-      "Single Particle Model w/ Electrolyte"
-  };
-  bool is_darcy     = (s.physics == PhysicsModule::DarcyPackedBed);
-  bool is_spm       = (s.physics == PhysicsModule::SingleParticle);
-  bool is_spme      = (s.physics == PhysicsModule::SingleParticleElectrolyte);
-  bool is_transient = (s.physics == PhysicsModule::ConvectionDiffusion || is_darcy);
+  const mphys::ModelInfo* info = EnsureModelConfig(s);
+  auto& reg = mphys::BuiltinModels();
 
-  ImGui::SeparatorText("Physics Module");
+  ImGui::SeparatorText("Physics Model");
   ImGui::Spacing();
-  int sel = static_cast<int>(s.physics);
-  ImGui::SetNextItemWidth(-1.0f);
-  if (ImGui::Combo("##phys", &sel, kMods, IM_ARRAYSIZE(kMods))) {
-    PhysicsModule prev = s.physics;
-    s.physics = static_cast<PhysicsModule>(sel);
-    // First switch into a particle model: seed discharge-friendly time settings.
-    const bool now_particle = s.physics == PhysicsModule::SingleParticle ||
-                              s.physics == PhysicsModule::SingleParticleElectrolyte;
-    const bool was_particle = prev == PhysicsModule::SingleParticle ||
-                              prev == PhysicsModule::SingleParticleElectrolyte;
-    if (now_particle && !was_particle) {
-      s.t_end = 3600.0f; s.dt_max = 20.0f; s.dt_snapshot = 20.0f;
+
+  // Package → Model selection tree (COMSOL-style). Each package is a
+  // collapsible branch; each model is a selectable leaf.
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 4.0f));
+  for (const auto& pkg : reg.Packages()) {
+    ImGuiTreeNodeFlags pkg_flags =
+        ImGuiTreeNodeFlags_SpanFullWidth | ImGuiTreeNodeFlags_DefaultOpen |
+        ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick;
+    if (ImGui::TreeNodeEx(pkg.c_str(), pkg_flags)) {
+      for (const mphys::ModelInfo* m : reg.InPackage(pkg)) {
+        ImGuiTreeNodeFlags leaf_flags =
+            ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen |
+            ImGuiTreeNodeFlags_SpanFullWidth;
+        if (m->id == s.model_id) leaf_flags |= ImGuiTreeNodeFlags_Selected;
+        char label[128];
+        snprintf(label, sizeof(label), "%s##%s", m->name.c_str(), m->id.c_str());
+        ImGui::TreeNodeEx(label, leaf_flags);
+        if (ImGui::IsItemClicked() && m->id != s.model_id) {
+          std::string prev = s.model_id;
+          s.model_id = m->id;
+          info = EnsureModelConfig(s);
+          // First switch into a particle model: seed discharge-friendly times.
+          const bool now_particle = s.model_id == kSpmId || s.model_id == kSpmeId;
+          const bool was_particle = prev == kSpmId || prev == kSpmeId;
+          if (now_particle && !was_particle) {
+            s.t_end = 3600.0f; s.dt_max = 20.0f; s.dt_snapshot = 20.0f;
+          }
+        }
+      }
+      ImGui::TreePop();
     }
-    is_spm  = (s.physics == PhysicsModule::SingleParticle);
-    is_spme = (s.physics == PhysicsModule::SingleParticleElectrolyte);
+  }
+  ImGui::PopStyleVar();
+
+  if (info && !info->description.empty()) {
+    ImGui::Spacing();
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("%s", info->description.c_str());
+    ImGui::PopTextWrapPos();
+  }
+  ImGui::Spacing();
+
+  if (!info) {
+    ImGui::TextDisabled("No physics model is registered.");
+    return;
   }
 
-  ImGui::Spacing();
+  // Models with bespoke geometry/parameters render their own panel.
+  if (s.model_id == kSpmId)  { ShowSpmPhysics(s);  return; }
+  if (s.model_id == kSpmeId) { ShowSpmePhysics(s); return; }
 
-  if (is_spm)  { ShowSpmPhysics(s);  return; }
-  if (is_spme) { ShowSpmePhysics(s); return; }
-
+  // ── Per-domain parameters (driven by the model schema) ─────────────────────
   if (!s.geo.built || s.geo.domains.empty()) {
     ImGui::TextDisabled("Build the geometry to configure physics parameters.");
   } else {
@@ -1576,31 +1388,18 @@ static void ShowPhysicsPanel(AppState& s) {
       char sec[32]; snprintf(sec, sizeof(sec), "Domain %d", d + 1);
       ImGui::SeparatorText(sec);
       ImGui::Spacing();
-
-      if (is_darcy) {
-        char id_k[16], id_m[16];
-        snprintf(id_k, sizeof(id_k), "##kp%d", d);
-        snprintf(id_m, sizeof(id_m), "##mu%d", d);
-        LabeledFloat("Permeability",      id_k, &dom.kappa, "m\xc2\xb2");
+      for (const auto& p : info->schema.params) {
+        if (p.scope != mphys::ParamScope::kPerDomain) continue;
+        float& val = dom.params[p.key];  // EnsureModelConfig guarantees presence
+        char id[64]; snprintf(id, sizeof(id), "##p_%d_%s", d, p.key.c_str());
+        LabeledFloat(p.label.c_str(), id, &val,
+                     p.unit.empty() ? nullptr : p.unit.c_str());
         ImGui::Spacing();
-        LabeledFloat("Dynamic viscosity", id_m, &dom.mu,    "Pa\xc2\xb7s");
-      } else {
-        char id_D[16], id_u[16], id_k[16];
-        snprintf(id_D, sizeof(id_D), "##D%d", d);
-        snprintf(id_u, sizeof(id_u), "##u%d", d);
-        snprintf(id_k, sizeof(id_k), "##k%d", d);
-        LabeledFloat("Diffusivity", id_D, &dom.D, "m\xc2\xb2/s");
-        if (is_transient) {
-          ImGui::Spacing();
-          LabeledFloat("Velocity",      id_u, &dom.u, "m/s");
-          ImGui::Spacing();
-          LabeledFloat("Reaction rate", id_k, &dom.k, "1/s");
-        }
       }
-      ImGui::Spacing();
     }
   }
 
+  // ── Boundary conditions (driven by the model schema) ───────────────────────
   ImGui::Spacing();
   ImGui::SeparatorText("Boundary Conditions");
   ImGui::Spacing();
@@ -1610,47 +1409,36 @@ static void ShowPhysicsPanel(AppState& s) {
     return;
   }
 
-  if (is_darcy) {
-    // Packed bed: each boundary is either a Pressure or Velocity specification
-    auto ShowPbBc = [](const char* label, float x_pos, PackedBedBc& bc) {
-      char buf[64]; snprintf(buf, sizeof(buf), "%s  (x = %.4g)", label, (double)x_pos);
-      ImGui::TextUnformatted(buf);
-      ImGui::Spacing();
-      char r0[64], r1[64], vid[64];
-      snprintf(r0,  sizeof(r0),  "Pressure##t%s",  label);
-      snprintf(r1,  sizeof(r1),  "Velocity##t%s",  label);
-      snprintf(vid, sizeof(vid), "##pbv%s",         label);
-      ImGui::RadioButton(r0, &bc.type, 0); ImGui::SameLine();
-      ImGui::RadioButton(r1, &bc.type, 1);
-      ImGui::SetNextItemWidth(-1.0f - kUnitColWidth);
-      float avail = ImGui::GetContentRegionAvail().x;
-      const char* unit = (bc.type == 0) ? "Pa" : "m/s";
-      ImGui::SetNextItemWidth(avail - ImGui::CalcTextSize(unit).x - 8.0f);
-      ExprInputFloat(vid, &bc.value);
-      ImGui::SameLine(0, 6); ImGui::TextDisabled("%s", unit);
-    };
+  for (int bi = 0; bi < (int)info->schema.boundaries.size(); ++bi) {
+    const mphys::BcSlot& slot = info->schema.boundaries[bi];
+    mphys::BcChoice& choice = s.bcs[slot.key];
 
-    ShowPbBc("Boundary 1", s.geo.nodes.front().x, s.pb_left_bc);
-    ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
-    ShowPbBc("Boundary 2", s.geo.nodes.back().x,  s.pb_right_bc);
-  } else {
-    auto ShowBc = [](const char* label, float x_pos, NodeBc& bc) {
-      char buf[64]; snprintf(buf, sizeof(buf), "%s  (x = %.4g)", label, (double)x_pos);
-      ImGui::TextUnformatted(buf);
-      ImGui::Spacing();
-      char rid[64], nid[64], vid[64];
-      snprintf(rid, sizeof(rid), "Dirichlet##t%s", label);
-      snprintf(nid, sizeof(nid), "Neumann##t%s",   label);
-      ImGui::RadioButton(rid, &bc.type, 0); ImGui::SameLine();
-      ImGui::RadioButton(nid, &bc.type, 1);
-      snprintf(vid, sizeof(vid), "##v%s", label);
-      ImGui::SetNextItemWidth(-1.0f);
-      ImGui::InputFloat(vid, &bc.value, 0, 0, "%.4g");
-    };
+    float x_pos = (bi == 0) ? s.geo.nodes.front().x : s.geo.nodes.back().x;
+    char hdr[96]; snprintf(hdr, sizeof(hdr), "%s  (x = %.4g)",
+                           slot.label.c_str(), (double)x_pos);
+    ImGui::TextUnformatted(hdr);
+    ImGui::Spacing();
 
-    ShowBc("Boundary 1", s.geo.nodes.front().x, s.left_bc);
-    ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
-    ShowBc("Boundary 2", s.geo.nodes.back().x,  s.right_bc);
+    for (int o = 0; o < (int)slot.options.size(); ++o) {
+      char rid[80]; snprintf(rid, sizeof(rid), "%s##bc_%s_%d",
+                             slot.options[o].label.c_str(), slot.key.c_str(), o);
+      ImGui::RadioButton(rid, &choice.option, o);
+      if (o + 1 < (int)slot.options.size()) ImGui::SameLine();
+    }
+
+    if (choice.option < 0 || choice.option >= (int)slot.options.size())
+      choice.option = 0;
+    const std::string& unit = slot.options[choice.option].unit;
+    float avail = ImGui::GetContentRegionAvail().x;
+    ImGui::SetNextItemWidth(unit.empty() ? -1.0f : avail - kUnitColWidth);
+    char vid[48]; snprintf(vid, sizeof(vid), "##bcv_%s", slot.key.c_str());
+    float fv = static_cast<float>(choice.value);
+    if (ExprInputFloat(vid, &fv)) choice.value = fv;
+    if (!unit.empty()) { ImGui::SameLine(0, 6); ImGui::TextDisabled("%s", unit.c_str()); }
+
+    if (bi + 1 < (int)info->schema.boundaries.size()) {
+      ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+    }
   }
 
   if ((int)s.geo.nodes.size() > 2) {
@@ -1664,7 +1452,7 @@ static void ShowMeshPanel(AppState& s) {
   ImGui::SeparatorText("Discretisation");
   ImGui::Spacing();
 
-  if (s.physics == PhysicsModule::SingleParticle) {
+  if (s.model_id == kSpmId) {
     ImGui::TextDisabled("Radial points per particle (r/R in [0,1]).");
     ImGui::Spacing();
     LabeledInt("Cells per particle", "##spmnc", &s.spm.n_cells);
@@ -1675,7 +1463,7 @@ static void ShowMeshPanel(AppState& s) {
     return;
   }
 
-  if (s.physics == PhysicsModule::SingleParticleElectrolyte) {
+  if (s.model_id == kSpmeId) {
     ImGui::TextDisabled("Electrolyte cells per region (x across the sandwich).");
     ImGui::Spacing();
     LabeledInt("Negative electrode", "##spmenn", &s.spme.n_n);
@@ -1732,7 +1520,8 @@ static void ShowMeshPanel(AppState& s) {
 }
 
 static void ShowStudyPanel(AppState& s) {
-  bool transient = (s.physics != PhysicsModule::SteadyDiffusion);
+  const mphys::ModelInfo* info = mphys::BuiltinModels().Find(s.model_id);
+  bool transient = !info || info->solver == mphys::SolverKind::kTransient;
 
   ImGui::SeparatorText("Solver");
   ImGui::TextUnformatted(transient ? "Transient  (SUNDIALS IDA)"
@@ -1805,8 +1594,8 @@ static void ShowResultsPanel(AppState& s) {
     return;
   }
 
-  const bool is_spm  = (s.physics == PhysicsModule::SingleParticle);
-  const bool is_spme = (s.physics == PhysicsModule::SingleParticleElectrolyte);
+  const bool is_spm  = (s.model_id == kSpmId);
+  const bool is_spme = (s.model_id == kSpmeId);
   const bool is_particle = is_spm || is_spme;
 
   // SPM/SPMe: terminal voltage vs time, with a marker at the selected instant.

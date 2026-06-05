@@ -1,6 +1,6 @@
 {
     "mphys_state": {
-        "physics": 2,
+        "model_id": "fluid_flow.darcy_packed_bed",
         "coord_system": 0,
         "geo": {
             "nodes": [
@@ -14,11 +14,16 @@
             "domains": [
                 {
                     "n_cells": 100,
-                    "D": 1.0,
-                    "u": 0.0,
-                    "k": 0.0,
-                    "kappa": 1.0,
-                    "mu": 1.0
+                    "params": [
+                        {
+                            "key": "kappa",
+                            "value": 1.0
+                        },
+                        {
+                            "key": "mu",
+                            "value": 1.0
+                        }
+                    ]
                 }
             ],
             "built": true
@@ -28,22 +33,22 @@
             1.0
         ],
         "geo_unit": 0,
-        "left_bc": {
-            "type": 0,
-            "value": 1.0
-        },
-        "right_bc": {
-            "type": 1,
-            "value": 0.0
-        },
-        "pb_left_bc": {
-            "type": 0,
-            "value": 2.0
-        },
-        "pb_right_bc": {
-            "type": 0,
-            "value": 1.0
-        },
+        "bcs": [
+            {
+                "key": "left",
+                "value": {
+                    "option": 0,
+                    "value": 2.0
+                }
+            },
+            {
+                "key": "right",
+                "value": {
+                    "option": 0,
+                    "value": 1.0
+                }
+            }
+        ],
         "spm": {
             "R_n": 5.86e-6,
             "R_p": 5.22e-6,

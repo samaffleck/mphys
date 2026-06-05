@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -16,6 +17,7 @@
 // Cereal — header-only JSON serialisation
 #include <cereal/archives/json.hpp>
 #include <cereal/types/common.hpp>
+#include <cereal/types/map.hpp>
 #include <cereal/types/string.hpp>
 #include <cereal/types/vector.hpp>
 
